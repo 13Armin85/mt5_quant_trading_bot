@@ -34,10 +34,33 @@ news:
   fail_closed: true
   block_before_minutes: 30
   block_after_minutes: 30
-  stale_after_minutes: 60
+  stale_after_minutes: 120
   poll_seconds: 60
+  max_snapshot_age_seconds: 180 # Background worker heartbeat; separate from publisher HTTP cache age.
   timeout_seconds: 10
-  provider: generic # generic JSON endpoint or tradingeconomics
+  provider: auto # Existing ECONOMIC_API_URL -> generic; otherwise public Forex Factory weekly export.
+  calendar_refresh_seconds: 3600 # Weekly export is not an actual-release streaming API.
+  headlines:
+    enabled: true
+    refresh_seconds: 300
+    sources:
+      - name: Federal Reserve Monetary Policy
+        url: https://www.federalreserve.gov/feeds/press_monetary.xml
+        currencies: [USD]
+        required: true
+        default_impact: HIGH
+      - name: Federal Reserve Speeches
+        url: https://www.federalreserve.gov/feeds/speeches.xml
+        currencies: [USD]
+        required: true
+        default_impact: LOW
+        high_impact_keywords: [monetary policy, economic outlook, inflation, interest rate, employment, financial stability]
+      - name: European Central Bank
+        url: https://www.ecb.europa.eu/rss/press.html
+        currencies: [EUR]
+        required: true
+        default_impact: LOW
+        high_impact_keywords: [monetary policy, interest rate, monetary policy decisions, press conference, inflation]
   block_unknown_effect: true
   surprise_rules: [] # Optional explicit interpretation: {contains: ..., higher_is_positive: true/false}
 

@@ -26,6 +26,7 @@ class EnvSettings(BaseSettings):
     economic_api_key: str | None = Field(default=None, alias="ECONOMIC_API_KEY", repr=False)
     news_api_url: str | None = Field(default=None, alias="NEWS_API_URL")
     economic_api_url: str | None = Field(default=None, alias="ECONOMIC_API_URL")
+    news_cache_dir: str = Field(default=str(ROOT / ".docker" / "data" / "news_cache"), alias="NEWS_CACHE_DIR")
     database_url: str = Field(default="sqlite:///trading_bot.db", alias="DATABASE_URL")
     enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
     mt5_bridge_url: str | None = Field(default=None, alias="MT5_BRIDGE_URL")
@@ -140,6 +141,26 @@ class AppConfig(BaseModel):
             value = float(self.get(f"news.{key}", 30))
             if not math.isfinite(value) or value < 0 or (key.endswith("seconds") and value == 0):
                 raise ValueError(f"news.{key} invalid")
+        if self.get("news.provider", "generic") not in {"auto", "forexfactory", "generic", "tradingeconomics"}:
+            raise ValueError("Unsupported news.provider")
+        snapshot_age = float(self.get("news.max_snapshot_age_seconds", 180))
+        if not math.isfinite(snapshot_age) or snapshot_age < float(self.get("news.poll_seconds", 60)):
+            raise ValueError("news.max_snapshot_age_seconds must be finite and >= news.poll_seconds")
+        if int(self.get("news.calendar_refresh_seconds", 3600)) < 3600:
+            raise ValueError("Public weekly calendar refresh must be at least 3600 seconds")
+        headlines = self.get("news.headlines", {})
+        if int(headlines.get("refresh_seconds", 300)) < 300:
+            raise ValueError("Official RSS refresh must be at least 300 seconds")
+        if headlines.get("enabled") and not self.env.news_api_url and not headlines.get("sources"):
+            raise ValueError("Configure at least one official RSS source")
+        from urllib.parse import urlsplit
+        for source in headlines.get("sources", []):
+            address = urlsplit(source.get("url", ""))
+            if (not source.get("name") or address.scheme != "https" or not address.hostname
+                    or address.username or address.password or not source.get("currencies")
+                    or any(c not in {"USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD","CNY","XAU"} for c in source["currencies"])
+                    or source.get("default_impact", "LOW") not in {"LOW", "MEDIUM", "HIGH"}):
+                raise ValueError("Invalid official RSS source configuration")
         for key, value in self.get("strategy.indicators", {}).items():
             if int(value) < 2 or int(value) > int(self.get("trading.default_bars", 700)) - 20:
                 raise ValueError(f"strategy.indicators.{key} outside history limits")

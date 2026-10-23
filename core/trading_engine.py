@@ -57,6 +57,8 @@ class TradingEngine:
         symbols = list(self.cfg.symbols.get("symbols", {}).keys())
         logger.info("Trading engine started symbols={}", symbols)
         try:
+            if hasattr(self.news_filter, "start_background"):
+                self.news_filter.start_background()
             while self.running:
                 if not self.client.health_check():
                     self.client.reconnect(int(self.cfg.get("trading.reconnect_attempts", 3)), float(self.cfg.get("trading.reconnect_delay_seconds", 5)))
@@ -69,6 +71,8 @@ class TradingEngine:
         except KeyboardInterrupt:
             logger.info("Stopped: broker positions retain their SL/TP; paper positions resume from journal")
         finally:
+            if hasattr(self.news_filter, "stop_background"):
+                self.news_filter.stop_background()
             self.persist_risk()
             logger.info("Engine stopped; broker positions retain their SL/TP")
 
@@ -84,6 +88,8 @@ class TradingEngine:
         self.persist_risk()
         self.manage_positions()
         self.execution.reconcile()
+        # News polling also runs when every instrument has a closed/stale market.
+        self.news_filter.refresh()
         for symbol in symbols:
             if not self.running:
                 break
@@ -101,6 +107,7 @@ class TradingEngine:
                   "equity": float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity(),
                   "planned_open_risk": exposure,
                   "quotes":self.quote_statuses,
+                  "news":self.news_filter.status(),
                   "last_decision": self.repository.get_state(self.execution.scope + ":decision", "Waiting for data")}
         self.repository.set_state("heartbeat", status)
         logger.info("heartbeat {}", json.dumps(status))
@@ -150,6 +157,7 @@ class TradingEngine:
             signal.reasons.append("Configured economic surprise conflicts with technical direction")
         new_signal = self.repository.save_signal(signal)
         decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(signal.candle_time), "strategy":signal.strategy,
+                    "news":{"allowed":news_ok,"reason":news_reason},
                     "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
         self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
         self.repository.set_state(self.execution.scope + ":decision", decision)
@@ -190,6 +198,12 @@ class TradingEngine:
         req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.cfg.get("trading.max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
         req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
         if not self.running:
+            return signal
+        # A new snapshot may have arrived while sizing/preparing this entry.
+        latest_ok, latest_reason, _ = self.news_filter.evaluate(logical_symbol)
+        if not latest_ok or not self.news_filter.direction_allowed(logical_symbol, signal.direction.value):
+            self.repository.set_state(self.execution.scope + ":decision", {**decision,"direction":"HOLD",
+                "news":{"allowed":False,"reason":latest_reason},"reason":"News changed before order submission"})
             return signal
         result = self.execution.execute(req)
         self.repository.save_execution(signal, lot, result)

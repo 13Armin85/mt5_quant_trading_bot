@@ -7,6 +7,7 @@ from config import load_config
 from database.repository import Repository
 from docker_runtime.healthcheck import healthy
 from scripts import docker_setup
+from monitoring.runtime_view import read_runtime
 
 
 def test_container_health_checks_only_recent_connected_heartbeat(tmp_path):
@@ -42,5 +43,19 @@ def test_setup_migrates_history_and_points_native_to_same_journal(tmp_path, monk
     assert len((tmp_path / ".docker" / "bridge.token").read_text()) >= 32
     with pytest.raises(ValueError, match="Reconcile"):
         docker_setup.prepare(cfg)  # Must never overwrite an existing Docker journal.
+
+
+def test_dashboard_reads_journal_without_creating_missing_database(tmp_path):
+    missing = tmp_path / "not-created.db"
+    with pytest.raises(sqlite3.OperationalError):
+        read_runtime("sqlite:///" + str(missing))
+    assert not missing.exists()
+    target = tmp_path / "existing.db"
+    repo = Repository("sqlite:///" + str(target))
+    repo.set_state("heartbeat", {"mode":"LIVE","news":{"background_running":True}})
+    repo.set_state("analysis:EURUSD", {"symbol":"EURUSD","direction":"HOLD"})
+    view = read_runtime("sqlite:///" + str(target))
+    assert view["heartbeat"]["mode"] == "LIVE" and len(view["analyses"]) == 1
+    assert not view["trades"]
 
 

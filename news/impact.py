@@ -27,6 +27,9 @@ def analyze_release(event, rules, now):
               "updated_at":str(event.updated_at),"actual":event.actual,"forecast":event.forecast,
               "previous":event.previous,"revision":event.revision,"unit":event.unit,
               "surprise":None,"currency_bias":None,"reason":"No validated directional interpretation"}
+    if event.kind == "headline":
+        result["reason"] = "Headline risk flag only; no directional inference"
+        return result
     if event.timestamp > now or (event.published_at and event.published_at > now):
         result["reason"] = "Release not yet published"
         return result

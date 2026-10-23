@@ -16,6 +16,7 @@ from core.trading_engine import TradingEngine
 from database.repository import Repository
 from monitoring.logger import configure_logging
 from news.news_filter import NewsFilter
+from news.background import ConcurrentNewsFilter
 from utils.types import TradingMode
 from core.symbol_resolver import SymbolResolver
 from core.runtime_lock import RuntimeLock
@@ -41,7 +42,7 @@ def build_runtime(mode=None):
     identity = hashlib.sha256(f"{account.server}:{account.login}".encode()).hexdigest()[:16]
     scope = f"{selected.value}:{identity}:{int(cfg.get('trading.magic', 260912))}"
     execution=ExecutionEngine(client,selected,cfg.env.enable_live_trading,ROOT / (cfg.env.kill_switch_path or cfg.get("trading.kill_switch_path","kill_switch.flag")),risk,repo,cfg.get("trading",{}),scope)
-    news=NewsFilter(cfg)
+    news=ConcurrentNewsFilter(cfg)
     return cfg,client,TradingEngine(cfg,client,feed,risk,execution,repo,news)
 
 
@@ -51,6 +52,9 @@ def main():
     run = commands.add_parser("run")
     run.add_argument("--mode", choices=["paper", "live"])
     commands.add_parser("health")
+    news = commands.add_parser("news", help="Read-only news connection check; no MT5 or orders")
+    news.add_argument("--symbol", default="XAUUSD")
+    news.add_argument("--output", default="reports/news_status.json")
     symbols = commands.add_parser("symbols", help="List broker instruments without sending orders")
     symbols.add_argument("--contains", help="Filter instrument names, e.g. EURUSD")
     symbols.add_argument("--all", action="store_true", help="List every broker instrument")
@@ -75,6 +79,24 @@ def main():
     backtest.add_argument("--max-volume", type=float, default=100)
     backtest.add_argument("--output", default="reports/backtest.json")
     args=parser.parse_args()
+    if args.command == "news":
+        from dataclasses import asdict
+        from backtest.report import save_report
+        cfg = load_config(); cfg.validate_runtime()
+        filt = NewsFilter(cfg)
+        now = datetime.now(timezone.utc)
+        allowed, reason, _ = filt.evaluate(args.symbol, now)
+        currencies = filt.currencies_for(args.symbol)
+        headlines = getattr(filt.headlines, "all_events", [])
+        report = {"read_only": True, "orders_enabled": False, "time": now.isoformat(),
+                  "symbol": args.symbol, "news_allows_entry": allowed, "reason": reason,
+                  "sources": filt.status(),
+                  "upcoming_events": [asdict(e) for e in filt.cache if e.kind == "release" and e.currency in currencies and e.timestamp >= now],
+                  "latest_headlines": [asdict(e) for e in sorted(headlines, key=lambda e: e.timestamp, reverse=True) if e.currency in currencies][:20]}
+        report = json.loads(json.dumps(report, default=str, ensure_ascii=False))
+        save_report(report, args.output)
+        print(json.dumps({**report, "report": args.output}, indent=2, ensure_ascii=True))
+        return
     if args.command == "analyze":
         from analysis.scanner import scan_symbol
         from backtest.report import save_report
@@ -179,6 +201,7 @@ def main():
                         "specification":{k:getattr(info,k,None) for k in ("trade_contract_size","trade_tick_size","trade_tick_value","volume_min","volume_max","volume_step","trade_stops_level","trade_freeze_level","filling_mode")}}
                 except ValueError as exc:
                     status["symbols"][logical] = {"error":str(exc)}
+            status["news_sources"] = engine.news_filter.status()
             print(json.dumps(status, indent=2, ensure_ascii=False))
     finally: client.shutdown()
 

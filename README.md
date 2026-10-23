@@ -4,6 +4,8 @@ A modular Python 3.12+ trading framework for MetaTrader 5. The project is delibe
 
 **Docker Desktop LIVE startup:** [راهنمای فارسی Docker](DOCKER_FA.md). On Windows, `Start-Live.cmd` starts the authenticated native MT5 bridge and the Linux `trader` service with `--mode live`. The bridge keeps the terminal password on the host; persistent SQLite history, single-writer leases and request deduplication survive container restarts. `Stop-Live.cmd` stops both components without closing broker positions. Docker Desktop and MT5 must be available; `ENABLE_LIVE_TRADING=true`, trading permissions, fresh quotes, news checks and a qualified signal are still required.
 
+During `run`, a background news worker publishes complete snapshots while chart analysis and position management continue on the MT5 thread. Pending, failed or stale snapshots block new entries; news is checked again immediately before submission. A read-only dashboard at `http://localhost:8501` refreshes chart assessments, indicators, news health/headlines and executions every five seconds. `Start-Live.cmd` starts both Compose services; `docker compose up -d --no-build dashboard` starts the monitor alone.
+
 **راهنمای اتصال حساب و اجرای ویندوز:** [راهنمای فارسی](SETUP_FA.md).
 
 **استراتژی‌ها، اندیکاتورها و انتخاب نهایی:** [راهنمای مقایسه ۱۲ روش](STRATEGIES_FA.md).
@@ -83,7 +85,15 @@ Never commit `.env`.
 
 ## Economic calendar / news
 
-The code does not invent a provider. Set `ECONOMIC_API_URL` to a real JSON calendar API that you are authorized to use. The generic provider expects a list (or `{ "events": [...] }`) with:
+The default `news.provider: auto` uses Forex Factory's public weekly JSON export without an API key, plus official Federal Reserve monetary-policy/speech and ECB RSS feeds. The calendar refreshes at most hourly and RSS every five minutes, with persistent HTTP caches and failure backoff. Forex Factory supplies the current week's schedule/impact/forecast, not streaming actual release values. RSS importance is an explicit local risk rule; prose does not select trade direction. Required feed failures block entries for their mapped currencies. [راهنمای فارسی اخبار](NEWS_FA.md).
+
+```powershell
+.\.venv\Scripts\python.exe main.py news --symbol XAUUSD --output reports/news_status.json
+```
+
+This diagnostic fetches news and reports source health/publication times without initializing MT5 or enabling orders. In Docker use `docker compose exec trader python main.py news --symbol XAUUSD`. News caches persist in `/app/data/news_cache`; connection health is distinct from an article's publication time.
+
+An existing `ECONOMIC_API_URL` overrides the public calendar in auto mode. The generic provider expects a list (or `{ "events": [...] }`) with:
 
 ```json
 {

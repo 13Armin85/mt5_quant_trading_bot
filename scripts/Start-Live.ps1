@@ -28,8 +28,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 & docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Invalid compose configuration.' }
-& docker compose up -d --build trader
+& docker compose up -d --build trader dashboard
 if ($LASTEXITCODE -ne 0) { throw 'Docker startup failed; Windows bridge remains available for retry.' }
 Write-Host 'LIVE container started. Orders require a qualified signal, news data and MT5 permissions.'
 Write-Host 'View: docker compose logs -f trader'
+Write-Host 'Dashboard: http://localhost:8501'
 Write-Host 'Stop trading engine: docker compose stop trader'

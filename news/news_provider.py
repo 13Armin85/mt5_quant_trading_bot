@@ -23,6 +23,8 @@ class NewsEvent:
     published_at: datetime | None = None
     unit: str = ""
     revision: str | None = None
+    kind: str = "release"
+    url: str = ""
 
 
 def parse_time(value, assume_utc=False):
@@ -134,5 +136,5 @@ class JsonHeadlineProvider:
             if not isinstance(currencies, list) or not currencies:
                 raise ValueError("Headline needs explicit currency mapping")
             for currency in currencies:
-                events.append(NewsEvent(ts, str(currency).upper(), str(row["impact"]).upper(), row["title"], source=row.get("source", "headlines"), event_id=f"{row.get('id', row['title'])}:{currency}", published_at=ts, updated_at=parse_time(row["updated_at"]) if row.get("updated_at") else None))
+                events.append(NewsEvent(ts, str(currency).upper(), str(row["impact"]).upper(), row["title"], source=row.get("source", "headlines"), event_id=f"{row.get('id', row['title'])}:{currency}", published_at=ts, updated_at=parse_time(row["updated_at"]) if row.get("updated_at") else None, kind="headline", url=row.get("url", "")))
         return deduplicate(events)

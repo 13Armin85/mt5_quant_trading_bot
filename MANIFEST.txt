@@ -54,6 +54,8 @@
 ./news/economic_calendar.py
 ./news/news_filter.py
 ./news/news_provider.py
+./news/public_feeds.py
+./news/background.py
 ./news/sentiment.py
 ./requirements.txt
 ./signals/__init__.py
@@ -64,7 +66,11 @@
 ./tests/test_backtest.py
 ./tests/test_execution.py
 ./tests/test_news.py
+./tests/test_public_news.py
+./tests/test_background_news.py
 ./tests/test_risk.py
 ./tests/test_signals.py
 ./utils/__init__.py
 ./utils/types.py
+./NEWS_FA.md
+./monitoring/runtime_view.py

@@ -112,3 +112,54 @@ def test_stop_during_analysis_prevents_new_entry(paper_runtime, broker, monkeypa
     monkeypatch.setattr(engine.signal_engine, "generate", stop_after_analysis)
     engine.process_symbol("EURUSD")
     assert not engine.execution.paper_positions() and not broker.sent
+
+
+def test_news_refreshes_while_market_quotes_are_closed(paper_runtime, broker, monkeypatch):
+    calls = []
+    monkeypatch.setattr(paper_runtime.news_filter, "refresh", lambda: calls.append("news"))
+    monkeypatch.setattr(paper_runtime.feed, "tick_status", lambda *_: {"fresh": False, "status": "MARKET_CLOSED", "reason": "Market closed"})
+    monkeypatch.setattr(paper_runtime.feed, "log_tick_status", lambda *_: None)
+    paper_runtime.run_cycle(["EURUSD"])
+    assert calls == ["news"] and not broker.sent
+
+
+def test_news_is_checked_again_after_sizing_before_entry(paper_runtime, broker, monkeypatch):
+    calls = []
+    def evaluate(*args):
+        calls.append(1)
+        return (True, "Clear", .5) if len(calls) == 1 else (False, "New high impact release", 0)
+    monkeypatch.setattr(paper_runtime.news_filter, "evaluate", evaluate)
+    paper_runtime.process_symbol("EURUSD")
+    assert len(calls) == 2 and not paper_runtime.execution.paper_positions() and not broker.sent
+    decision = paper_runtime.repository.get_state(paper_runtime.execution.scope + ":decision")
+    assert decision["direction"] == "HOLD" and "New high impact" in decision["news"]["reason"]
+
+
+def test_chart_analysis_continues_while_news_http_is_waiting(paper_runtime, broker):
+    from threading import Event
+    import time
+    from news.background import ConcurrentNewsFilter
+    engine = paper_runtime
+    engine.cfg.settings["news"]["enabled"] = True
+    entered, release = Event(), Event()
+    collector = NewsFilter(engine.cfg)
+    collector.headlines = None
+    class SlowCalendar:
+        def events(self, *args):
+            entered.set()
+            assert release.wait(3)
+            return []
+    collector.provider = SlowCalendar()
+    engine.news_filter = ConcurrentNewsFilter(engine.cfg, collector)
+    engine.news_filter.start_background()
+    try:
+        assert entered.wait(1)
+        started = time.monotonic()
+        engine.process_symbol("EURUSD")
+        assert time.monotonic() - started < 1
+        analysis = engine.repository.get_state("analysis:EURUSD")
+        assert analysis and not analysis["news"]["allowed"]
+        assert not engine.execution.paper_positions() and not broker.sent
+    finally:
+        release.set()
+        engine.news_filter.stop_background()

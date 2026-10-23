@@ -17,6 +17,7 @@ services:
       ECONOMIC_API_KEY: ${ECONOMIC_API_KEY:-}
       NEWS_API_URL: ${NEWS_API_URL:-}
       ECONOMIC_API_URL: ${ECONOMIC_API_URL:-}
+      NEWS_CACHE_DIR: /app/data/news_cache
       DATABASE_URL: sqlite:////app/data/trading_bot.db
       RUNTIME_LOCK_PATH: /app/data/.bot.lock
       KILL_SWITCH_PATH: /app/control/kill_switch.flag
@@ -45,6 +46,32 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+  dashboard:
+    image: mt5-quant-trader:local
+    init: true
+    restart: unless-stopped
+    entrypoint: ["python", "-m", "streamlit"]
+    command: ["run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      DATABASE_URL: sqlite:////app/data/trading_bot.db
+      ENABLE_LIVE_TRADING: "false"
+    volumes:
+      - ./.docker/data:/app/data:ro
+      - ./config:/app/config:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 secrets:
   mt5_bridge_token:
     file: ./.docker/bridge.token
