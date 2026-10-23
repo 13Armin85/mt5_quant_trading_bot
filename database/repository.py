@@ -23,7 +23,8 @@ class Repository:
         if not signal.signal_id or self.signal_exists(signal.signal_id):
             return False
         payload = json.dumps({
-            "reasons": signal.reasons, "regime": signal.market_regime.value,
+            "reasons": signal.reasons, "regime": signal.market_regime.value, "strategy":signal.strategy,
+            "analysis":signal.meta,
             "scores": {"trend": signal.trend_score, "momentum": signal.momentum_score, "volume": signal.volume_score,
                        "structure": signal.structure_score, "price_action": signal.price_action_score, "news": signal.news_score,
                        "volatility": signal.volatility_score, "spread": signal.spread_score}}, ensure_ascii=False)

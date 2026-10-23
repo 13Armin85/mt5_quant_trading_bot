@@ -1,18 +1,26 @@
 symbols:
   EURUSD:
     broker_symbol: EURUSD_o
+    quote_schedule: &forex_schedule
+      type: litefinance_forex
+      timezone: Europe/Helsinki
     aliases: [EURUSD, EURUSDm, EURUSD.a]
     currencies: [EUR, USD]
   GBPUSD:
     broker_symbol: GBPUSD_o
+    quote_schedule: *forex_schedule
     aliases: [GBPUSD, GBPUSDm, GBPUSD.a]
     currencies: [GBP, USD]
   USDJPY:
     broker_symbol: USDJPY_o
+    quote_schedule: *forex_schedule
     aliases: [USDJPY, USDJPYm, USDJPY.a]
     currencies: [USD, JPY]
   XAUUSD:
     broker_symbol: XAUUSD_o
+    quote_schedule:
+      type: weekend_only # Daily metals sessions must be checked separately; no exact reopening is inferred.
+      timezone: Europe/Helsinki
     aliases: [XAUUSD, XAUUSDm, GOLD]
     currencies: [XAU, USD]
     extra_news_currencies: [USD]

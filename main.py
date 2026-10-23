@@ -18,6 +18,7 @@ from news.news_filter import NewsFilter
 from utils.types import TradingMode
 from core.symbol_resolver import SymbolResolver
 from core.runtime_lock import RuntimeLock
+from signals.strategies import FAMILIES
 
 
 def build_runtime(mode=None):
@@ -32,7 +33,7 @@ def build_runtime(mode=None):
     if selected == TradingMode.LIVE and not cfg.env.enable_live_trading:
         raise ValueError("LIVE blocked: set ENABLE_LIVE_TRADING=true explicitly")
     client=MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC")); client.initialize()
-    feed=DataFeed(client,int(cfg.get("trading.max_tick_age_seconds",15)))
+    feed=DataFeed(client,int(cfg.get("trading.max_tick_age_seconds",15)),cfg.symbols)
     risk=RiskManager(cfg.get("trading",{}),client)
     repo=Repository(cfg.env.database_url)
     account = client.account_info()
@@ -52,6 +53,9 @@ def main():
     symbols = commands.add_parser("symbols", help="List broker instruments without sending orders")
     symbols.add_argument("--contains", help="Filter instrument names, e.g. EURUSD")
     symbols.add_argument("--all", action="store_true", help="List every broker instrument")
+    analyze = commands.add_parser("analyze", help="Read-only snapshot of all enabled strategies; never submits orders")
+    analyze.add_argument("--symbol", required=True)
+    analyze.add_argument("--output", default="reports/analysis.json")
     export = commands.add_parser("export-bars")
     export.add_argument("--symbol", required=True)
     export.add_argument("--days", type=int, default=90)
@@ -61,7 +65,7 @@ def main():
     backtest.add_argument("--signals")
     backtest.add_argument("--contract-value", type=float)
     backtest.add_argument("--compare", action="store_true")
-    backtest.add_argument("--family", default="auto", choices=["auto", "trend_pullback", "breakout", "mean_reversion", "momentum"])
+    backtest.add_argument("--family", default="ensemble", choices=["auto", "ensemble", *FAMILIES])
     backtest.add_argument("--spread", type=float, default=0)
     backtest.add_argument("--slippage", type=float, default=0)
     backtest.add_argument("--commission", type=float, default=7)
@@ -70,6 +74,20 @@ def main():
     backtest.add_argument("--max-volume", type=float, default=100)
     backtest.add_argument("--output", default="reports/backtest.json")
     args=parser.parse_args()
+    if args.command == "analyze":
+        from analysis.scanner import scan_symbol
+        from backtest.report import save_report
+        cfg = load_config();cfg.validate_runtime()
+        client = MT5Client(cfg.env,cfg.get("trading.mt5_time_zone","UTC"))
+        try:
+            client.initialize()
+            result = scan_symbol(cfg,client,args.symbol)
+            save_report(result,args.output)
+            print(json.dumps({"symbol":result["symbol"],"read_only":True,"regime":result["regime"],
+                              "selection":result["selection"],"report":args.output},indent=2,ensure_ascii=False))
+        finally:
+            client.shutdown()
+        return
     if args.command == "symbols":
         cfg = load_config()
         client = MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC"))
@@ -151,7 +169,8 @@ def main():
                     news_ok, reason, _ = engine.news_filter.evaluate(logical)
                     tick = client.symbol_info_tick(symbol)
                     tick_time = datetime.fromtimestamp(tick.time, timezone.utc) if tick else None
-                    status["symbols"][logical] = {"broker_symbol":symbol,"fresh_tick":engine.feed.is_tick_fresh(symbol),"last_tick_utc":tick_time.isoformat() if tick_time else None,"tick_age_seconds":round((datetime.now(timezone.utc)-tick_time).total_seconds(),1) if tick_time else None,"spread_points":engine.feed.spread_points(symbol),"news_ok":news_ok,"news_reason":reason,
+                    quote_status = engine.feed.tick_status(symbol)
+                    status["symbols"][logical] = {"broker_symbol":symbol,"fresh_tick":quote_status["fresh"],"quote_status":quote_status,"last_tick_utc":tick_time.isoformat() if tick_time else None,"tick_age_seconds":round((datetime.now(timezone.utc)-tick_time).total_seconds(),1) if tick_time else None,"spread_points":engine.feed.spread_points(symbol),"news_ok":news_ok,"news_reason":reason,
                         "specification":{k:getattr(info,k,None) for k in ("trade_contract_size","trade_tick_size","trade_tick_value","volume_min","volume_max","volume_step","trade_stops_level","trade_freeze_level","filling_mode")}}
                 except ValueError as exc:
                     status["symbols"][logical] = {"error":str(exc)}

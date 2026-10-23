@@ -4,6 +4,18 @@ A modular Python 3.12+ trading framework for MetaTrader 5. The project is delibe
 
 **راهنمای اتصال حساب و اجرای ویندوز:** [راهنمای فارسی](SETUP_FA.md).
 
+**استراتژی‌ها، اندیکاتورها و انتخاب نهایی:** [راهنمای مقایسه ۱۲ روش](STRATEGIES_FA.md).
+
+The default `strategy.family: ensemble` evaluates 12 configured closed-bar rules and records every assessment: trend pullback, range breakout, Bollinger re-entry, multi-timeframe momentum, EMA/MACD crosses, Ichimoku cloud break, Supertrend flip, Stochastic/CCI reversals, Keltner break and rolling VWAP reclaim. Related rules share one confirmation group. Qualified opposing directions abstain. Scores describe rule suitability, never win probabilities. `auto` uses the same selector; an explicit family restricts selection to that rule.
+
+Indicators now include Stochastic K/D, CCI, Williams %R, ROC, causal Ichimoku/Supertrend, Keltner and prior-bar Donchian channels alongside the original EMA/SMA, RSI/StochRSI, MACD, ADX/DMI, ATR/Bollinger, OBV and rolling VWAP. Zero/missing volume does not become fabricated real volume.
+
+```powershell
+python main.py analyze --symbol EURUSD --output reports/eurusd_analysis.json
+```
+
+This read-only command reports the latest stored closed bars even outside market hours. It never initializes an execution engine or sends orders. Its final direction is HOLD because contemporaneous news/execution are not validated; `selection` contains the technical proposal, all rule assessments and scores. Runtime analyses also appear in SQLite and the dashboard. Comparisons include all 12 rules plus ensemble and rank qualifying methods on validation data only, with the chosen method's later test results reported separately. No automatic live promotion occurs.
+
 Runtime improvements include closed-candle validation, explicit unambiguous broker mapping, an account/mode-scoped persistent execution journal, broker account-currency sizing with costs, a 1% aggregate risk ceiling, restartable PAPER positions, SL/TP exits, optional break-even/trailing/partial exits, and an OS single-instance lock. Unknown sends suspend entries and are reconciled without resubmission. LIVE integration must be verified against the target broker; automated tests use isolated mock brokers.
 
 ## Architecture
@@ -141,7 +153,7 @@ Offline CLI (no MT5 connection):
 python main.py backtest --bars bars.csv --signals signals.csv --spread 0.00010 --slippage 0.00002 --commission 7
 ```
 
-Generate technical signals from real exported history, or compare all four families with chronological 60/20/20 splits, cost and ATR-stop sensitivity and available 12/3/3-month walk-forward windows:
+Generate technical signals from real exported history, or compare all 12 rules and ensemble with chronological 60/20/20 splits, cost and ATR-stop sensitivity and available 12/3/3-month walk-forward windows:
 
 ```powershell
 python main.py export-bars --symbol EURUSD --days 365 --output reports/eurusd.csv

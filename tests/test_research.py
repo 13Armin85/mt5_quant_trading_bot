@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
+import pytest
 from pandas.testing import assert_frame_equal
 from config import load_config
+from signals.strategies import FAMILIES
 from backtest.research import generate_signals, compare_strategies
 from news.impact import analyze_release, numeric_release
 from news.news_provider import NewsEvent
@@ -24,21 +26,23 @@ def cfg():
     return result
 
 
-def test_future_prices_do_not_change_prior_signals():
+@pytest.mark.parametrize("family",["trend_pullback","ensemble"])
+def test_future_prices_do_not_change_prior_signals(family):
     data=bars(270)
-    baseline=generate_signals(data.iloc[:250],cfg(),1,"trend_pullback")
+    baseline=generate_signals(data.iloc[:250],cfg(),1,family)
     assert len(baseline)>0
     changed=data.copy()
     for column in ("open","high","low","close"):
         changed.loc[250:,column] *= 2
-    full=generate_signals(changed,cfg(),1,"trend_pullback")
+    full=generate_signals(changed,cfg(),1,family)
     prior=full[full.time < data.time.iloc[250]].reset_index(drop=True)
     assert_frame_equal(baseline.reset_index(drop=True),prior)
 
 
 def test_comparison_reports_all_families_and_splits():
     report=compare_strategies(bars(225),cfg(),1,{"commission_per_lot":.01})
-    assert set(report["families"])=={"trend_pullback","breakout","mean_reversion","momentum"}
+    assert set(report["families"])=={*FAMILIES,"ensemble"}
+    assert report["validation_choice"] is None
     assert not report["news_validated"]
     for result in report["families"].values():
         assert {"train","validation","test","cost_sensitivity","parameter_sensitivity","walk_forward"} <= result.keys()

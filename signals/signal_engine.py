@@ -8,7 +8,7 @@ from analysis.trend import score_trend
 from analysis.volatility import score_volatility
 from signals.confidence_engine import ConfidenceEngine
 from signals.filters import signal_id
-from signals.strategies import strategy_direction
+from signals.selector import select_strategy, indicator_snapshot
 from utils.types import Direction, MarketRegime, Signal
 
 
@@ -26,18 +26,16 @@ class SignalEngine:
         structure_score = float(structure["score"])
         volume_score = float(volume["score"])
         combined_trend = (macro_score + trend_score) / 2
-        direction, family, rule_reason = strategy_direction(frames, regime,
-            self.cfg.get("strategy.family", "auto"), int(self.cfg.get("strategy.breakout_lookback", 20)),
-            float(self.cfg.get("strategy.pullback_atr", .5)))
-        if (direction == Direction.BUY and structure["direction"] == "BEARISH") or (direction == Direction.SELL and structure["direction"] == "BULLISH"):
-            direction = Direction.HOLD
-            rule_reason += "; conflicting structure"
+        selection = select_strategy(frames, regime, self.cfg, structure)
+        direction, family, rule_reason = selection.direction, selection.strategy, selection.reason
         components = {
             "trend": combined_trend, "structure": structure_score, "momentum": momentum_score,
             "volume": volume_score, "price_action": pa["score"], "volatility": vol_score,
             "news": news_score if news_ok else 0.0,
         }
-        confidence = self.confidence.score(components, direction.value)
+        technical_score = self.confidence.score(components, direction.value)
+        selection_weight = float(self.cfg.get("strategy.selection.rule_weight", .70))
+        confidence = selection_weight * selection.score + (1-selection_weight) * technical_score
         x = frames["entry"].iloc[-1]
         entry = float(x.close); atr = float(x.atr)
         stop_mult = float(self.cfg.get("strategy.stop_atr_multiple", 1.5))
@@ -48,7 +46,7 @@ class SignalEngine:
         else:
             sl = tp = None
         min_conf = float(self.cfg.get("trading.min_confidence", 0.70))
-        reasons = [rule_reason] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
+        reasons = [rule_reason, f"Selected strategy={family}; independent groups={selection.groups}; suitability={selection.score:.3f}"] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
         if not news_ok:
             reasons.append("High-impact/news-data safety block"); direction = Direction.HOLD
         if spread_points is None or spread_points > float(self.cfg.get("trading.max_spread_points", 40)):
@@ -58,9 +56,13 @@ class SignalEngine:
         if rr is not None and rr < float(self.cfg.get("trading.min_rr", 1.5)):
             reasons.append("Risk/reward below minimum"); direction = Direction.HOLD
         candle_time = frames["entry"].time.iloc[-1].to_pydatetime() if hasattr(frames["entry"].time.iloc[-1], "to_pydatetime") else datetime.now(timezone.utc)
-        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, family)
+        identity = "ensemble-v1" if self.cfg.get("strategy.family", "ensemble") in ("auto", "ensemble") else family
+        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, identity)
+        if direction == Direction.HOLD:
+            sl = tp = rr = None
         return Signal(symbol=symbol, direction=direction, confidence=confidence, entry_price=entry, stop_loss=sl, take_profit=tp,
                       risk_reward=rr, market_regime=regime, trend_score=combined_trend, momentum_score=momentum_score,
                       volume_score=volume_score, structure_score=structure_score, price_action_score=pa["score"],
                       news_score=news_score, volatility_score=vol_score, spread_score=0.5 if spread_points is None else max(0.0, 1.0-min(spread_points/100,1)),
-                      reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=family, signal_id=sid)
+                      reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=family, signal_id=sid,
+                      meta={"selection":selection.to_dict(),"indicators":indicator_snapshot(frames),"technical_score":technical_score})

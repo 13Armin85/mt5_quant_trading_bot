@@ -23,6 +23,19 @@ try:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat["time"])).total_seconds()
         st.metric("Runtime heartbeat age (seconds)", round(age))
         st.json(heartbeat)
+    st.subheader("Strategy comparison on the latest analyzed candles")
+    with repo.engine.connect() as conn:
+        available = conn.execute(text("SELECT key FROM runtime_state WHERE key LIKE 'analysis:%'")).scalars().all()
+    analyses = [repo.get_state(key) for key in available]
+    for analysis in analyses:
+        if not analysis:
+            continue
+        st.write(analysis["symbol"], analysis.get("strategy"), analysis.get("direction"))
+        selection = analysis.get("selection") or {}
+        st.caption(selection.get("reason",""))
+        st.dataframe(selection.get("assessments",[]),use_container_width=True)
+        with st.expander("Indicators and oscillators"):
+            st.json(analysis.get("indicators"))
     engine=create_engine(cfg.env.database_url)
     with engine.connect() as conn:
         rows=conn.execute(text("SELECT symbol,direction,confidence,market_regime,lot,status,timestamp,reason FROM trades ORDER BY id DESC LIMIT 100")).mappings().all()

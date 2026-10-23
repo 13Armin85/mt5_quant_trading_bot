@@ -3,7 +3,20 @@ from __future__ import annotations
 import math
 from utils.types import Direction, MarketRegime
 
-FAMILIES = ("trend_pullback", "breakout", "mean_reversion", "momentum")
+FAMILIES = ("trend_pullback", "breakout", "mean_reversion", "momentum", "ema_cross", "macd_cross",
+            "ichimoku", "supertrend", "stochastic_reversal", "cci_reversion", "keltner_breakout", "vwap_reclaim")
+
+GROUPS = {"trend_pullback":"trend", "ema_cross":"trend", "ichimoku":"trend", "supertrend":"trend", "vwap_reclaim":"trend",
+          "breakout":"breakout", "keltner_breakout":"breakout", "momentum":"momentum", "macd_cross":"momentum",
+          "mean_reversion":"reversion", "stochastic_reversal":"reversion", "cci_reversion":"reversion"}
+
+EXTRA_COLUMNS = {
+    "ema_cross": ("ema_50",), "macd_cross": ("macd", "macd_signal"),
+    "ichimoku": ("tenkan", "kijun", "cloud_a", "cloud_b"), "supertrend": ("supertrend_direction",),
+    "stochastic_reversal": ("stoch_k", "stoch_d"), "cci_reversion": ("cci",),
+    "keltner_breakout": ("keltner_high", "keltner_low", "relative_volume"), "vwap_reclaim": ("vwap", "obv"),
+    "breakout": ("relative_volume",), "mean_reversion": ("bb_low", "bb_high"),
+}
 
 
 def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=.5):
@@ -15,12 +28,23 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
         raise ValueError("Invalid strategy parameters")
     if regime in {MarketRegime.HIGH_VOLATILITY, MarketRegime.LOW_VOLATILITY, MarketRegime.UNCERTAIN, MarketRegime.NEWS_EVENT}:
         return Direction.HOLD, family, "Market regime blocks entry"
+    if any(role not in frames or len(frames[role]) < 2 for role in ("entry", "macro", "trend", "setup")):
+        return Direction.HOLD, family, "Insufficient multi-timeframe history"
     x, previous = frames["entry"].iloc[-1], frames["entry"].iloc[-2]
     macro, trend, setup = (frames[k].iloc[-1] for k in ("macro", "trend", "setup"))
-    if not all(math.isfinite(float(v)) for v in (x.atr, x.rsi, x.ema_20, macro.ema_200, trend.ema_200)) or x.atr <= 0:
+    if not all(math.isfinite(float(row.get(column,float("nan")))) for row in (macro,trend) for column in ("ema_20","ema_50","ema_200")):
+        return Direction.HOLD, family, "Higher-timeframe indicator warmup incomplete"
+    if not all(math.isfinite(float(x.get(c,float("nan")))) for c in ("atr","rsi","ema_20")) or x.atr <= 0:
         return Direction.HOLD, family, "Indicator warmup incomplete"
     if family == "auto":
         family = "mean_reversion" if regime == MarketRegime.RANGING else "breakout" if regime == MarketRegime.BREAKOUT else "trend_pullback"
+    columns = ("close", "open", "high", "low", "ema_20", "atr", "rsi", *EXTRA_COLUMNS.get(family, ()))
+    if any(not math.isfinite(float(row.get(c, float("nan")))) for row in (x, previous) for c in columns):
+        return Direction.HOLD, family, "Required indicators unavailable or still warming up"
+    if GROUPS[family] == "reversion" and regime != MarketRegime.RANGING:
+        return Direction.HOLD, family, "Reversion requires a ranging market"
+    if GROUPS[family] == "trend" and regime == MarketRegime.RANGING:
+        return Direction.HOLD, family, "Trend entry requires a trending/breakout market"
     bullish = macro.ema_20 > macro.ema_50 > macro.ema_200 and trend.ema_20 > trend.ema_50 > trend.ema_200
     bearish = macro.ema_20 < macro.ema_50 < macro.ema_200 and trend.ema_20 < trend.ema_50 < trend.ema_200
     buy = sell = False
@@ -28,6 +52,8 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
         buy = bullish and previous.low <= previous.ema_20 + previous.atr * pullback_atr and x.close > x.ema_20 and x.close > previous.close
         sell = bearish and previous.high >= previous.ema_20 - previous.atr * pullback_atr and x.close < x.ema_20 and x.close < previous.close
     elif family == "breakout":
+        if len(frames["entry"])<lookback+1:
+            return Direction.HOLD, family, "Insufficient breakout lookback"
         prior = frames["entry"].iloc[-lookback-1:-1]
         healthy = .0005 <= x.atr / x.close <= .02 and x.relative_volume >= .85
         buy = healthy and not bearish and x.close > prior.high.max() and x.close > x.open
@@ -38,6 +64,32 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
     elif family == "momentum":
         buy = bullish and 50 < setup.rsi < 70 and setup.macd_hist > 0 and x.close > previous.high
         sell = bearish and 30 < setup.rsi < 50 and setup.macd_hist < 0 and x.close < previous.low
+    elif family == "ema_cross":
+        buy = bullish and previous.ema_20 <= previous.ema_50 and x.ema_20 > x.ema_50 and x.close > x.ema_20
+        sell = bearish and previous.ema_20 >= previous.ema_50 and x.ema_20 < x.ema_50 and x.close < x.ema_20
+    elif family == "macd_cross":
+        buy = bullish and previous.macd <= previous.macd_signal and x.macd > x.macd_signal and x.close > x.ema_20
+        sell = bearish and previous.macd >= previous.macd_signal and x.macd < x.macd_signal and x.close < x.ema_20
+    elif family == "ichimoku":
+        roof, floor = max(x.cloud_a, x.cloud_b), min(x.cloud_a, x.cloud_b)
+        buy = bullish and x.tenkan > x.kijun and x.close > roof and previous.close <= max(previous.cloud_a, previous.cloud_b)
+        sell = bearish and x.tenkan < x.kijun and x.close < floor and previous.close >= min(previous.cloud_a, previous.cloud_b)
+    elif family == "supertrend":
+        buy = bullish and previous.supertrend_direction < 0 and x.supertrend_direction > 0
+        sell = bearish and previous.supertrend_direction > 0 and x.supertrend_direction < 0
+    elif family == "stochastic_reversal":
+        buy = previous.stoch_k <= previous.stoch_d and x.stoch_k > x.stoch_d and min(previous.stoch_k, previous.stoch_d) < 20 and x.close > previous.close
+        sell = previous.stoch_k >= previous.stoch_d and x.stoch_k < x.stoch_d and max(previous.stoch_k, previous.stoch_d) > 80 and x.close < previous.close
+    elif family == "cci_reversion":
+        buy = previous.cci < -100 and x.cci >= -100 and x.close > previous.close
+        sell = previous.cci > 100 and x.cci <= 100 and x.close < previous.close
+    elif family == "keltner_breakout":
+        healthy = .0005 <= x.atr / x.close <= .02 and x.relative_volume >= .85
+        buy = healthy and not bearish and previous.close <= previous.keltner_high and x.close > x.keltner_high and x.close > x.open
+        sell = healthy and not bullish and previous.close >= previous.keltner_low and x.close < x.keltner_low and x.close < x.open
+    elif family == "vwap_reclaim":
+        buy = bullish and previous.close <= previous.vwap and x.close > x.vwap and x.obv > previous.obv
+        sell = bearish and previous.close >= previous.vwap and x.close < x.vwap and x.obv < previous.obv
     if buy and sell:
         return Direction.HOLD, family, "Conflicting strategy directions"
     direction = Direction.BUY if buy else Direction.SELL if sell else Direction.HOLD

@@ -18,6 +18,6 @@ class ConfidenceEngine:
             if not math.isfinite(float(components.get(name, .5))):
                 raise ValueError(f"Invalid confidence component: {name}")
             raw = max(0.0, min(1.0, float(components.get(name, 0.5))))
-            directional = raw if direction == "BUY" or name in {"volatility", "news"} else 1.0 - raw
+            directional = raw if direction == "BUY" or name in {"volatility", "news", "volume"} else 1.0 - raw
             value += weight * directional
         return max(0.0, min(1.0, value))

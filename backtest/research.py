@@ -76,7 +76,7 @@ def compare_strategies(bars, cfg, contract_value, engine_kwargs):
     report = {"news_validated": False, "selection": "All families reported; no automatic live promotion",
               "split": {"train_end": str(first), "validation_end": str(second)}, "families": {}}
     windows = build_windows(pd.DatetimeIndex(bars.time))
-    for family in FAMILIES:
+    for family in (*FAMILIES,"ensemble"):
         signals = generate_signals(bars, cfg, contract_value, family)
         results = {}
         for name, start, end in (("train", bars.time.iloc[0], first), ("validation", first, second), ("test", second, bars.time.iloc[-1] + pd.Timedelta(seconds=1))):
@@ -105,4 +105,19 @@ def compare_strategies(bars, cfg, contract_value, engine_kwargs):
         if not windows:
             results["walk_forward_status"] = "Insufficient history for 12/3/3 month windows"
         report["families"][family] = results
+    # Rank on validation only; the later test period never chooses a strategy.
+    threshold = int(cfg.get("validation.minimum_trades",200))
+    ranked = []
+    for name,results in report["families"].items():
+        metrics = results.get("validation",{})
+        if metrics.get("total_trades",0)<threshold or metrics.get("net_profit",0)<=0:
+            continue
+        if metrics.get("profit_factor",0)<float(cfg.get("validation.minimum_profit_factor",1.3)) or metrics.get("max_drawdown",1)>float(cfg.get("validation.maximum_drawdown",.25)):
+            continue
+        ranked.append({"strategy":name,"validation_expectancy":metrics["expectancy"],"validation_profit_factor":metrics["profit_factor"],"validation_drawdown":metrics["max_drawdown"]})
+    ranked.sort(key=lambda x:(-x["validation_expectancy"],x["validation_drawdown"],x["strategy"]))
+    report["validation_ranking"] = ranked
+    report["validation_choice"] = ranked[0]["strategy"] if ranked else None
+    report["chosen_strategy_test"] = report["families"][ranked[0]["strategy"]].get("test") if ranked else None
+    report["selection_status"] = "Validation-only ranking; no live promotion" if ranked else "No strategy met the validation sample/performance requirements"
     return report

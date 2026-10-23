@@ -37,6 +37,7 @@ class TradingEngine:
         self.position_manager = PositionManager(app_cfg.get("position_management", {}))
         self.resolved = {}
         self.frames_cache = {}
+        self.quote_statuses = {}
         stored = repository.get_state(execution.scope + ":risk")
         if stored:
             self.risk.state = RiskState(**stored)
@@ -90,6 +91,7 @@ class TradingEngine:
                   "mode": self.execution.mode.value, "symbols": self.resolved,
                   "equity": float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity(),
                   "planned_open_risk": exposure,
+                  "quotes":self.quote_statuses,
                   "last_decision": self.repository.get_state(self.execution.scope + ":decision", "Waiting for data")}
         self.repository.set_state("heartbeat", status)
         logger.info("heartbeat {}", json.dumps(status))
@@ -102,9 +104,11 @@ class TradingEngine:
         if logical_symbol not in self.resolved:
             self.resolved[logical_symbol] = self.resolver.resolve(logical_symbol)
         symbol = self.resolved[logical_symbol]
-        if not self.feed.is_tick_fresh(symbol):
-            logger.warning("{} rejected: stale/missing tick", symbol)
-            self.repository.set_state(self.execution.scope + ":decision", {"symbol":symbol,"direction":"HOLD","reason":"Stale/missing tick"})
+        quote_status = self.feed.tick_status(symbol)
+        self.quote_statuses[symbol] = quote_status
+        self.feed.log_tick_status(quote_status)
+        if not quote_status["fresh"]:
+            self.repository.set_state(self.execution.scope + ":decision", {"symbol":symbol,"direction":"HOLD","reason":quote_status["reason"],"quote_status":quote_status["status"]})
             return None
         frames: dict[str, object] = {}
         tf_cfg = self.cfg.get("strategy.timeframes", {})
@@ -132,11 +136,15 @@ class TradingEngine:
         signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread)
         if signal.direction != Direction.HOLD and not self.news_filter.direction_allowed(logical_symbol, signal.direction.value):
             signal.direction = Direction.HOLD
+            signal.stop_loss = signal.take_profit = signal.risk_reward = None
             signal.reasons.append("Configured economic surprise conflicts with technical direction")
-        self.repository.save_signal(signal)
-        decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(signal.candle_time), "reasons": signal.reasons}
+        new_signal = self.repository.save_signal(signal)
+        decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(signal.candle_time), "strategy":signal.strategy,
+                    "selection":signal.meta.get("selection"), "reasons": signal.reasons}
+        self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
         self.repository.set_state(self.execution.scope + ":decision", decision)
-        logger.info("signal {}", json.dumps(decision, ensure_ascii=False))
+        if new_signal:
+            logger.info("signal {}", json.dumps({k:v for k,v in decision.items() if k!="selection"}, ensure_ascii=False))
         if signal.direction == Direction.HOLD:
             return signal
         if not news_ok:

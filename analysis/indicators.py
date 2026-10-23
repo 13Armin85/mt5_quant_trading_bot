@@ -37,6 +37,7 @@ def add_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     volume = out.get("real_volume", out.get("tick_volume", pd.Series(index=out.index, dtype=float))).astype(float)
     if volume.fillna(0).sum() <= 0 and "tick_volume" in out:
         volume = out["tick_volume"].astype(float)
+    out["volume_source"] = "real_volume" if "real_volume" in df and df.real_volume.fillna(0).sum()>0 else "tick_volume" if "tick_volume" in df else "unavailable"
     for p in (20, 50, 100, 200):
         out[f"ema_{p}"] = EMAIndicator(close, p).ema_indicator()
     for column, key, default in (("ema_20", "ema_fast", 20), ("ema_50", "ema_mid", 50), ("ema_200", "ema_slow", 200)):

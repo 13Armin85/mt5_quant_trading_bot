@@ -71,9 +71,30 @@ class AppConfig(BaseModel):
             raise ValueError("Unsupported strategy timeframe")
         if not self.symbols.get("symbols"):
             raise ValueError("Configure at least one symbol")
+        for logical,meta in self.symbols["symbols"].items():
+            schedule = meta.get("quote_schedule")
+            if schedule:
+                if schedule.get("type") not in {"litefinance_forex","weekend_only"}:
+                    raise ValueError(f"Unsupported quote_schedule for {logical}")
+                ZoneInfo(schedule["timezone"])
         from signals.strategies import FAMILIES
-        if self.get("strategy.family", "auto") not in (*FAMILIES, "auto"):
+        if self.get("strategy.family", "ensemble") not in (*FAMILIES, "auto", "ensemble"):
             raise ValueError("Unsupported strategy.family")
+        enabled = self.get("strategy.enabled_strategies", list(FAMILIES))
+        if not isinstance(enabled,list) or not enabled or len(set(enabled))!=len(enabled) or any(name not in FAMILIES for name in enabled):
+            raise ValueError("enabled_strategies must contain unique supported strategy names")
+        if self.get("strategy.family", "ensemble") in FAMILIES and self.get("strategy.family") not in enabled:
+            raise ValueError("Explicit strategy.family must be enabled")
+        for key, default in (("minimum_score",.65),("rule_weight",.70)):
+            value = float(self.get(f"strategy.selection.{key}",default))
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"strategy.selection.{key} must be between 0 and 1")
+        if not 1<=int(self.get("strategy.selection.minimum_groups",1))<=4:
+            raise ValueError("strategy.selection.minimum_groups must be 1..4")
+        component_weights = self.get("strategy.selection.component_weights",{})
+        components = {"regime_fit","higher_timeframes","oscillators","volume","price_confirmation","volatility","entry_trigger"}
+        if component_weights and (set(component_weights)!=components or any(not math.isfinite(float(v)) or float(v)<0 for v in component_weights.values()) or sum(component_weights.values())<=0):
+            raise ValueError("selection.component_weights must contain the seven supported components with finite nonnegative weights and positive total")
         if int(self.get("strategy.breakout_lookback", 20)) < 2:
             raise ValueError("breakout_lookback must be >= 2")
         for name in ("stop_atr_multiple", "pullback_atr"):
@@ -97,6 +118,10 @@ class AppConfig(BaseModel):
         for key, value in self.get("strategy.indicators", {}).items():
             if int(value) < 2 or int(value) > int(self.get("trading.default_bars", 700)) - 20:
                 raise ValueError(f"strategy.indicators.{key} outside history limits")
+        indicators = self.get("strategy.indicators",{})
+        for low, high, a, b in (("ema_fast","ema_mid",20,50),("ema_mid","ema_slow",50,200),("macd_fast","macd_slow",12,26),("ichimoku_fast","ichimoku_base",9,26),("ichimoku_base","ichimoku_span",26,52)):
+            if int(indicators.get(low,a)) >= int(indicators.get(high,b)):
+                raise ValueError(f"strategy.indicators.{low} must be less than {high}")
 
     def get(self, path: str, default: Any = None) -> Any:
         current: Any = self.settings
