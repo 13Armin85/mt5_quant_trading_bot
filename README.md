@@ -2,6 +2,10 @@
 
 A modular Python 3.12+ trading framework for MetaTrader 5. The project is deliberately **PAPER-first**. A confidence score is not a guarantee of win rate or profit, and `LIVE` execution is blocked unless it is explicitly enabled.
 
+**راهنمای اتصال حساب و اجرای ویندوز:** [راهنمای فارسی](SETUP_FA.md).
+
+Runtime improvements include closed-candle validation, explicit unambiguous broker mapping, an account/mode-scoped persistent execution journal, broker account-currency sizing with costs, a 1% aggregate risk ceiling, restartable PAPER positions, SL/TP exits, optional break-even/trailing/partial exits, and an OS single-instance lock. Unknown sends suspend entries and are reconciled without resubmission. LIVE integration must be verified against the target broker; automated tests use isolated mock brokers.
+
 ## Architecture
 
 ```text
@@ -16,7 +20,7 @@ The implementation includes MT5 connectivity, multi-timeframe data, indicator an
 
 - `trading.mode: PAPER`
 - `risk_per_trade: 0.01`
-- `max_total_risk: 0.03`
+- `max_total_risk: 0.01`
 - `max_daily_loss: 0.03`
 - `max_weekly_loss: 0.06`
 - `max_consecutive_losses: 3`
@@ -92,7 +96,7 @@ python main.py health
 python main.py run
 ```
 
-The framework receives live broker data but uses simulated fills in PAPER mode.
+The framework receives broker data but uses simulated fills in PAPER mode. Simulated equity, positions and exits persist in the database separately from LIVE. Quote polling cannot reconstruct every intratick SL/TP touch while stopped; PAPER fills are estimates. Daily/weekly risk baselines use UTC.
 
 ## Dashboard
 
@@ -128,6 +132,24 @@ print(metrics)
 ```
 
 Required signal columns: `time`, `direction`, `entry`, `sl`, `tp`, `contract_value_per_price`, `volume`. Same-bar SL+TP collisions are resolved conservatively as SL first. For production research, use tick/Bid/Ask data where possible.
+
+`time` identifies the **completed source bar's opening timestamp**; execution occurs at the next available bar open. `entry` is informational and never used as a historical fill. OHLC is assumed to be Bid. BUY entry adds spread; SELL exits use Ask. Requested volume is capped by dynamic 1% sizing and remaining portfolio risk. Unclosed trades are liquidated at the end of the data. `volume` is optional and acts as an upper bound. `contract_value_per_price` must be a valid account-currency value per lot/one price unit; a constant conversion may be unsuitable for non-account-currency instruments.
+
+Offline CLI (no MT5 connection):
+
+```powershell
+python main.py backtest --bars bars.csv --signals signals.csv --spread 0.00010 --slippage 0.00002 --commission 7
+```
+
+Generate technical signals from real exported history, or compare all four families with chronological 60/20/20 splits, cost and ATR-stop sensitivity and available 12/3/3-month walk-forward windows:
+
+```powershell
+python main.py export-bars --symbol EURUSD --days 365 --output reports/eurusd.csv
+python main.py backtest --bars reports/eurusd.csv --family trend_pullback --contract-value 100000 --spread 0.00010 --slippage 0.00002 --commission 7
+python main.py backtest --bars reports/eurusd.csv --compare --contract-value 100000 --spread 0.00010 --slippage 0.00002 --commission 7 --output reports/comparison.json
+```
+
+The contract value above is only an example for EURUSD with a USD account and a 100,000 EUR lot. Use actual specifications and costs. Generation requires at least 220 complete bars of every configured timeframe, with the CSV using the entry timeframe. Windows use preceding data for indicator warmup and never future bars. No automatic live strategy promotion occurs. News impact on historical results is **unvalidated** because historical news snapshots are not supplied.
 
 ## Walk-forward
 
@@ -196,6 +218,10 @@ Before doing so, verify: connection health, correct broker symbol names, fresh t
 
 Broker aliases are listed in `config/symbols.yaml`. If your broker uses `XAUUSDm`, `EURUSD.a`, etc., update aliases and adapt runtime symbol resolution for your broker account.
 
+Set `broker_symbol: EURUSDm` under the logical symbol to select an exact instrument. Multiple available aliases produce an error until an exact mapping is configured. The currency mapping remains attached to the logical symbol. Existing same-symbol positions block new entries in both netting and hedging accounts; manual positions are never modified.
+
+The current workspace is configured for the connected LiteFinance account: `EURUSD_o`, `GBPUSD_o`, `USDJPY_o`, `XAUUSD_o`. `python main.py symbols` lists actual terminal instruments without submitting orders. `trading.mt5_time_zone: Europe/Helsinki` normalizes the server wall-clock timestamps observed on this connection, including seasonal UTC+2/UTC+3 changes. For APIs that already supply UTC, set this to `UTC`. Health output reports individual trading permissions, normalized tick times and tick age; stale/future tick protection remains enabled.
+
 ## Important limitations
 
 - No strategy guarantees profit.
@@ -203,7 +229,12 @@ Broker aliases are listed in `config/symbols.yaml`. If your broker uses `XAUUSDm
 - Real volume and market depth depend on the broker and instrument; the system must not fabricate unavailable data.
 - The generic news provider requires a real external API URL/key.
 - The included backtester is bar-based and intentionally conservative; institutional-grade research should use higher-fidelity tick/Bid/Ask data.
-- Trading sessions, broker holidays, swap, partial fills, and broker-specific filling modes may need adaptation to the target broker.
+- Intrabar drawdown, historical swap and session-specific liquidity are not simulated. Ratios are unannualized per-trade statistics; realized drawdown includes initial capital.
+- Conservative FOK/IOC selection, partial entry fills and emergency protection are implemented but require broker demo validation. A partial entry is never topped up. Unresolved protection/partial-close outcomes block entries for operator review.
+- Shared currency exposure is blocked conservatively. This is not an empirically fitted cross-asset correlation model.
+- Generic JSON calendar/headline adapters require real authorized endpoints. `news.provider: tradingeconomics` uses the official calendar API with `ECONOMIC_API_KEY`; subscription coverage/latency must be verified. Unknown medium-impact release effects suspend entries by default. Numeric surprise rules are explicit configuration assumptions; prose sentiment cannot send orders or alter risk.
+- Account changes during execution invalidate the connection. Do not delete the database/journal while positions or unresolved attempts exist. An alternate database, machine or copied project bypasses the local instance lock and must not run against the same account/magic concurrently.
+- The 1% cap is planned risk. Gaps, actual slippage and broker execution can cause larger losses.
 
 ## Project tree
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
+from types import SimpleNamespace
+import time
 
 from loguru import logger
 
 try:
     import MetaTrader5 as mt5
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     mt5 = None
 
 
@@ -16,9 +19,33 @@ class MT5Error(RuntimeError):
 
 
 class MT5Client:
-    def __init__(self, env) -> None:
+    def __init__(self, env, market_timezone: str = "UTC") -> None:
         self.env = env
         self.connected = False
+        self.account_identity = None
+        self.market_timezone = ZoneInfo(market_timezone)
+
+    def market_timestamp_to_utc(self, timestamp: float) -> float:
+        if self.market_timezone.key == "UTC":
+            return timestamp
+        wall_time = datetime.fromtimestamp(timestamp, timezone.utc).replace(tzinfo=None)
+        return wall_time.replace(tzinfo=self.market_timezone).timestamp()
+
+    def utc_to_market_time(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("MT5 date arguments must be timezone-aware")
+        return value.astimezone(self.market_timezone).replace(tzinfo=timezone.utc)
+
+    def normalize_market_times(self, rows):
+        if rows is None or len(rows) == 0 or self.market_timezone.key == "UTC":
+            return rows
+        import pandas as pd
+        normalized = rows.copy()
+        for field, unit in (("time", "s"), ("time_msc", "ms")):
+            if field in (rows.dtype.names or ()):
+                values = pd.to_datetime(rows[field], unit=unit).tz_localize(self.market_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+                normalized[field] = values.as_unit(unit).asi8
+        return normalized
 
     def initialize(self) -> bool:
         if mt5 is None:
@@ -34,7 +61,22 @@ class MT5Client:
             kwargs["server"] = self.env.mt5_server
         self.connected = bool(mt5.initialize(**kwargs))
         if not self.connected:
-            raise MT5Error(f"MT5 initialize failed: {mt5.last_error()}")
+            raise MT5Error(f"MT5 initialize failed (code {mt5.last_error()[0]})")
+        account = mt5.account_info()
+        if account is None or not self.health_check():
+            self.shutdown()
+            raise MT5Error("MT5 account/terminal unavailable")
+        if self.env.mt5_login and int(account.login) != int(self.env.mt5_login):
+            self.shutdown()
+            raise MT5Error("Connected account differs from MT5_LOGIN")
+        if self.env.mt5_server and account.server != self.env.mt5_server:
+            self.shutdown()
+            raise MT5Error("Connected server differs from MT5_SERVER")
+        identity = (int(account.login), str(account.server))
+        if self.account_identity is not None and identity != self.account_identity:
+            self.shutdown()
+            raise MT5Error("Account changed during execution; restart with intended account")
+        self.account_identity = identity
         logger.info("MT5 connected")
         return True
 
@@ -43,16 +85,24 @@ class MT5Client:
             mt5.shutdown()
         self.connected = False
 
-    def reconnect(self) -> bool:
-        self.shutdown()
-        return self.initialize()
+    def reconnect(self, attempts=3, delay=5) -> bool:
+        for attempt in range(attempts):
+            self.shutdown()
+            try:
+                return self.initialize()
+            except MT5Error:
+                logger.warning("MT5 reconnect attempt {} failed", attempt + 1)
+                if attempt + 1 < attempts:
+                    time.sleep(delay)
+        raise MT5Error("MT5 reconnect attempts exhausted")
 
     def health_check(self) -> bool:
         if mt5 is None or not self.connected:
             return False
         terminal = mt5.terminal_info()
         account = mt5.account_info()
-        return bool(terminal and account and getattr(terminal, "connected", True))
+        return bool(terminal and account and getattr(terminal, "connected", False)
+                    and (self.account_identity is None or (int(account.login), str(account.server)) == self.account_identity))
 
     def account_info(self):
         return self._call(mt5.account_info)
@@ -63,8 +113,17 @@ class MT5Client:
     def symbol_info(self, symbol: str):
         return self._call(mt5.symbol_info, symbol)
 
+    def symbols_get(self):
+        return self._call(mt5.symbols_get)
+
     def symbol_info_tick(self, symbol: str):
-        return self._call(mt5.symbol_info_tick, symbol)
+        tick = self._call(mt5.symbol_info_tick, symbol)
+        if tick is None or self.market_timezone.key == "UTC":
+            return tick
+        fields = tick._asdict()
+        fields.update(time=int(self.market_timestamp_to_utc(tick.time)),
+                      time_msc=round(self.market_timestamp_to_utc(tick.time_msc / 1000) * 1000))
+        return SimpleNamespace(**fields)
 
     def positions_get(self, **kwargs):
         return self._call(mt5.positions_get, **kwargs)
@@ -72,20 +131,28 @@ class MT5Client:
     def orders_get(self, **kwargs):
         return self._call(mt5.orders_get, **kwargs)
 
+    def history_deals_get(self, *args, **kwargs):
+        args = tuple(self.utc_to_market_time(a) if isinstance(a, datetime) else a for a in args)
+        return self._call(mt5.history_deals_get, *args, **kwargs)
+
+    def history_orders_get(self, *args, **kwargs):
+        args = tuple(self.utc_to_market_time(a) if isinstance(a, datetime) else a for a in args)
+        return self._call(mt5.history_orders_get, *args, **kwargs)
+
     def copy_rates_from(self, symbol: str, timeframe: int, date_from: datetime, count: int):
-        return self._call(mt5.copy_rates_from, symbol, timeframe, date_from, count)
+        return self.normalize_market_times(self._call(mt5.copy_rates_from, symbol, timeframe, self.utc_to_market_time(date_from), count))
 
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int):
-        return self._call(mt5.copy_rates_from_pos, symbol, timeframe, start_pos, count)
+        return self.normalize_market_times(self._call(mt5.copy_rates_from_pos, symbol, timeframe, start_pos, count))
 
     def copy_rates_range(self, symbol: str, timeframe: int, date_from: datetime, date_to: datetime):
-        return self._call(mt5.copy_rates_range, symbol, timeframe, date_from, date_to)
+        return self.normalize_market_times(self._call(mt5.copy_rates_range, symbol, timeframe, self.utc_to_market_time(date_from), self.utc_to_market_time(date_to)))
 
     def copy_ticks_from(self, symbol: str, date_from: datetime, count: int, flags: int):
-        return self._call(mt5.copy_ticks_from, symbol, date_from, count, flags)
+        return self.normalize_market_times(self._call(mt5.copy_ticks_from, symbol, self.utc_to_market_time(date_from), count, flags))
 
     def copy_ticks_range(self, symbol: str, date_from: datetime, date_to: datetime, flags: int):
-        return self._call(mt5.copy_ticks_range, symbol, date_from, date_to, flags)
+        return self.normalize_market_times(self._call(mt5.copy_ticks_range, symbol, self.utc_to_market_time(date_from), self.utc_to_market_time(date_to), flags))
 
     def market_book_add(self, symbol: str):
         return self._call(mt5.market_book_add, symbol)
@@ -127,10 +194,10 @@ class MT5Client:
         return mapping[name]
 
     def _call(self, fn, *args, **kwargs):
-        if not self.health_check() and fn not in {getattr(mt5, "account_info", None), getattr(mt5, "terminal_info", None)}:
+        if not self.health_check():
             raise MT5Error("MT5 connection is not healthy")
         result = fn(*args, **kwargs)
         if result is None:
             code = mt5.last_error() if mt5 else None
-            logger.error("MT5 call {} failed: {}", getattr(fn, "__name__", fn), code)
+            logger.error("MT5 call {} failed code={}", getattr(fn, "__name__", fn), code[0] if code else None)
         return result

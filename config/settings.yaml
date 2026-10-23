@@ -1,8 +1,18 @@
 trading:
+  mt5_time_zone: Europe/Helsinki # Observed LiteFinance server wall-clock timestamps; DST-aware. Use UTC for standard UTC APIs.
   mode: PAPER
   poll_seconds: 2
   risk_per_trade: 0.01
-  max_total_risk: 0.03
+  max_total_risk: 0.01
+  max_drawdown: 0.10
+  max_positions: 3
+  max_trades_per_day: 10
+  max_spread_points: 40
+  commission_per_lot: 7.0 # round trip, in account currency
+  slippage_points: 20
+  magic: 260912
+  reconnect_attempts: 3
+  reconnect_delay_seconds: 5
   max_daily_loss: 0.03
   max_weekly_loss: 0.06
   max_consecutive_losses: 3
@@ -25,8 +35,17 @@ news:
   block_before_minutes: 30
   block_after_minutes: 30
   stale_after_minutes: 60
+  poll_seconds: 60
+  timeout_seconds: 10
+  provider: generic # generic JSON endpoint or tradingeconomics
+  block_unknown_effect: true
+  surprise_rules: [] # Optional explicit interpretation: {contains: ..., higher_is_positive: true/false}
 
 strategy:
+  family: auto # auto, trend_pullback, breakout, mean_reversion, momentum
+  stop_atr_multiple: 1.5
+  breakout_lookback: 20
+  pullback_atr: 0.5
   confidence_mode: RULE
   timeframes:
     macro: H4

@@ -66,6 +66,7 @@ class OrderRequest:
     deviation: int
     magic: int = 260912
     comment: str = "quant-bot"
+    signal_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -76,3 +77,6 @@ class ExecutionResult:
     message: str
     filled_price: float | None = None
     raw: Any = None
+    status: str = "REJECTED"
+    filled_volume: float = 0.0
+    planned_risk: float | None = None

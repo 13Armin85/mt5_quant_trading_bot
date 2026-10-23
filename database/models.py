@@ -47,3 +47,17 @@ class SignalRecord(Base):
     direction: Mapped[str] = mapped_column(String(8))
     confidence: Mapped[float] = mapped_column(Float)
     payload: Mapped[str] = mapped_column(Text)
+
+
+class ExecutionAttempt(Base):
+    __tablename__ = "execution_attempts"
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[str] = mapped_column(Text)
+    updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RuntimeState(Base):
+    __tablename__ = "runtime_state"
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)

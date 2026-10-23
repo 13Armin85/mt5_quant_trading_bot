@@ -10,6 +10,10 @@ class WalkForwardWindow:
 
 
 def build_windows(index: pd.DatetimeIndex, train_months: int = 12, validation_months: int = 3, test_months: int = 3) -> list[WalkForwardWindow]:
+    if min(train_months, validation_months, test_months) <= 0:
+        raise ValueError("Walk-forward periods must be positive")
+    if len(index) == 0:
+        return []
     start = pd.Timestamp(index.min()).tz_localize(None) if pd.Timestamp(index.min()).tzinfo else pd.Timestamp(index.min())
     end = pd.Timestamp(index.max()).tz_localize(None) if pd.Timestamp(index.max()).tzinfo else pd.Timestamp(index.max())
     windows = []

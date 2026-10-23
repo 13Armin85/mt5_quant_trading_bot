@@ -1,14 +1,18 @@
 symbols:
   EURUSD:
+    broker_symbol: EURUSD_o
     aliases: [EURUSD, EURUSDm, EURUSD.a]
     currencies: [EUR, USD]
   GBPUSD:
+    broker_symbol: GBPUSD_o
     aliases: [GBPUSD, GBPUSDm, GBPUSD.a]
     currencies: [GBP, USD]
   USDJPY:
+    broker_symbol: USDJPY_o
     aliases: [USDJPY, USDJPYm, USDJPY.a]
     currencies: [USD, JPY]
   XAUUSD:
+    broker_symbol: XAUUSD_o
     aliases: [XAUUSD, XAUUSDm, GOLD]
     currencies: [XAU, USD]
     extra_news_currencies: [USD]

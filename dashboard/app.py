@@ -3,6 +3,8 @@ from __future__ import annotations
 import streamlit as st
 from sqlalchemy import create_engine, text
 from config import load_config
+from database.repository import Repository
+from datetime import datetime, timezone
 
 st.set_page_config(page_title="MT5 Quant Bot", layout="wide")
 cfg=load_config(); st.title("MT5 Quant Trading Bot")
@@ -15,6 +17,12 @@ c3.metric("Min Confidence", f"{cfg.get('trading.min_confidence',.70)*100:.0f}%")
 c4.metric("Max Daily Loss", f"{cfg.get('trading.max_daily_loss',.03)*100:.0f}%")
 
 try:
+    repo = Repository(cfg.env.database_url)
+    heartbeat = repo.get_state("heartbeat")
+    if heartbeat:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat["time"])).total_seconds()
+        st.metric("Runtime heartbeat age (seconds)", round(age))
+        st.json(heartbeat)
     engine=create_engine(cfg.env.database_url)
     with engine.connect() as conn:
         rows=conn.execute(text("SELECT symbol,direction,confidence,market_regime,lot,status,timestamp,reason FROM trades ORDER BY id DESC LIMIT 100")).mappings().all()

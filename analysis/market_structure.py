@@ -4,11 +4,18 @@ import numpy as np
 
 
 def _swings(df, window: int = 3):
-    highs, lows = [], []
-    for i in range(window, len(df) - window):
-        h = df.high.iloc[i]; l = df.low.iloc[i]
-        if h >= df.high.iloc[i-window:i+window+1].max(): highs.append((i, float(h)))
-        if l <= df.low.iloc[i-window:i+window+1].min(): lows.append((i, float(l)))
+    if window < 1:
+        raise ValueError("Swing window must be positive")
+    if len(df) < window * 2 + 1:
+        return [], []
+    high, low = df.high.to_numpy(), df.low.to_numpy()
+    from numpy.lib.stride_tricks import sliding_window_view
+    high_windows = sliding_window_view(high, window * 2 + 1)
+    low_windows = sliding_window_view(low, window * 2 + 1)
+    hi = np.flatnonzero(high[window:-window] >= high_windows.max(axis=1)) + window
+    lo = np.flatnonzero(low[window:-window] <= low_windows.min(axis=1)) + window
+    highs = [(int(i), float(high[i])) for i in hi]
+    lows = [(int(i), float(low[i])) for i in lo]
     return highs, lows
 
 

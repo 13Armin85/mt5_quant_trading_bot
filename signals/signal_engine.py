@@ -8,6 +8,7 @@ from analysis.trend import score_trend
 from analysis.volatility import score_volatility
 from signals.confidence_engine import ConfidenceEngine
 from signals.filters import signal_id
+from signals.strategies import strategy_direction
 from utils.types import Direction, MarketRegime, Signal
 
 
@@ -25,16 +26,12 @@ class SignalEngine:
         structure_score = float(structure["score"])
         volume_score = float(volume["score"])
         combined_trend = (macro_score + trend_score) / 2
-        if regime == MarketRegime.TRENDING_BULLISH and structure["direction"] != "BEARISH": direction = Direction.BUY
-        elif regime == MarketRegime.TRENDING_BEARISH and structure["direction"] != "BULLISH": direction = Direction.SELL
-        elif regime == MarketRegime.RANGING:
-            x = frames["entry"].iloc[-1]
-            if x.rsi < 35 and x.close <= x.bb_low: direction = Direction.BUY
-            elif x.rsi > 65 and x.close >= x.bb_high: direction = Direction.SELL
-            else: direction = Direction.HOLD
-        elif structure.get("breakout") == "UP": direction = Direction.BUY
-        elif structure.get("breakout") == "DOWN": direction = Direction.SELL
-        else: direction = Direction.HOLD
+        direction, family, rule_reason = strategy_direction(frames, regime,
+            self.cfg.get("strategy.family", "auto"), int(self.cfg.get("strategy.breakout_lookback", 20)),
+            float(self.cfg.get("strategy.pullback_atr", .5)))
+        if (direction == Direction.BUY and structure["direction"] == "BEARISH") or (direction == Direction.SELL and structure["direction"] == "BULLISH"):
+            direction = Direction.HOLD
+            rule_reason += "; conflicting structure"
         components = {
             "trend": combined_trend, "structure": structure_score, "momentum": momentum_score,
             "volume": volume_score, "price_action": pa["score"], "volatility": vol_score,
@@ -43,7 +40,7 @@ class SignalEngine:
         confidence = self.confidence.score(components, direction.value)
         x = frames["entry"].iloc[-1]
         entry = float(x.close); atr = float(x.atr)
-        stop_mult = 1.5
+        stop_mult = float(self.cfg.get("strategy.stop_atr_multiple", 1.5))
         if direction == Direction.BUY:
             sl = entry - atr * stop_mult; tp = entry + (entry - sl) * float(self.cfg.get("trading.preferred_rr", 2.0))
         elif direction == Direction.SELL:
@@ -51,16 +48,19 @@ class SignalEngine:
         else:
             sl = tp = None
         min_conf = float(self.cfg.get("trading.min_confidence", 0.70))
-        reasons = macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
-        if not news_ok: reasons.append("High-impact/news-data safety block")
+        reasons = [rule_reason] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
+        if not news_ok:
+            reasons.append("High-impact/news-data safety block"); direction = Direction.HOLD
+        if spread_points is None or spread_points > float(self.cfg.get("trading.max_spread_points", 40)):
+            reasons.append("Spread safety block"); direction = Direction.HOLD
         if confidence < min_conf: reasons.append(f"Confidence {confidence:.2f} < {min_conf:.2f}"); direction = Direction.HOLD
         rr = abs((tp-entry)/(entry-sl)) if direction != Direction.HOLD and sl != entry else None
         if rr is not None and rr < float(self.cfg.get("trading.min_rr", 1.5)):
             reasons.append("Risk/reward below minimum"); direction = Direction.HOLD
         candle_time = frames["entry"].time.iloc[-1].to_pydatetime() if hasattr(frames["entry"].time.iloc[-1], "to_pydatetime") else datetime.now(timezone.utc)
-        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, regime.value)
+        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, family)
         return Signal(symbol=symbol, direction=direction, confidence=confidence, entry_price=entry, stop_loss=sl, take_profit=tp,
                       risk_reward=rr, market_regime=regime, trend_score=combined_trend, momentum_score=momentum_score,
                       volume_score=volume_score, structure_score=structure_score, price_action_score=pa["score"],
                       news_score=news_score, volatility_score=vol_score, spread_score=0.5 if spread_points is None else max(0.0, 1.0-min(spread_points/100,1)),
-                      reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=regime.value, signal_id=sid)
+                      reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=family, signal_id=sid)

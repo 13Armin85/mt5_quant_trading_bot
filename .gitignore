@@ -9,3 +9,4 @@ models/*.joblib
 reports/
 kill_switch.flag
 .pytest_cache/
+.bot.lock
