@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import time
 import json
 import math
+from threading import Event
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -19,6 +19,7 @@ from core.risk_manager import RiskState
 from core.mt5_client import MT5Error
 from core.execution import filling_mode
 from signals.filters import spread_is_valid
+from signals.trade_plan import pricing_context
 from utils.types import Direction, OrderRequest, TradingMode
 
 
@@ -33,6 +34,7 @@ class TradingEngine:
         self.news_filter = news_filter
         self.signal_engine = SignalEngine(app_cfg)
         self.running = True
+        self.stop_event = Event()
         self.resolver = SymbolResolver(client, app_cfg.symbols)
         self.position_manager = PositionManager(app_cfg.get("position_management", {}))
         self.resolved = {}
@@ -45,6 +47,10 @@ class TradingEngine:
     def persist_risk(self):
         if self.risk.state:
             self.repository.set_state(self.execution.scope + ":risk", asdict(self.risk.state))
+
+    def stop(self) -> None:
+        self.running = False
+        self.stop_event.set()
 
     def run_forever(self) -> None:
         poll = float(self.cfg.get("trading.poll_seconds", 2))
@@ -59,11 +65,12 @@ class TradingEngine:
                 except (MT5Error, ValueError) as exc:
                     logger.warning("Runtime temporarily unavailable: {}", exc)
                     self.repository.set_state("heartbeat", {"time": datetime.now(timezone.utc).isoformat(), "connected": False, "mode": self.execution.mode.value, "last_decision": str(exc)})
-                time.sleep(poll)
+                self.stop_event.wait(poll)
         except KeyboardInterrupt:
             logger.info("Stopped: broker positions retain their SL/TP; paper positions resume from journal")
         finally:
             self.persist_risk()
+            logger.info("Engine stopped; broker positions retain their SL/TP")
 
     def run_cycle(self, symbols):
         account = self.client.account_info()
@@ -78,6 +85,8 @@ class TradingEngine:
         self.manage_positions()
         self.execution.reconcile()
         for symbol in symbols:
+            if not self.running:
+                break
             try:
                 self.process_symbol(symbol)
             except ValueError as exc:
@@ -133,14 +142,15 @@ class TradingEngine:
         spread_ok, _ = spread_is_valid(spread, historical, float(self.cfg.get("strategy.filters.max_spread_multiplier", 2)))
         if not spread_ok:
             news_ok, news_reason = False, "Abnormal spread; entry suspended"
-        signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread)
+        context = pricing_context(self.client,symbol,self.cfg.get("trading",{}))
+        signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
         if signal.direction != Direction.HOLD and not self.news_filter.direction_allowed(logical_symbol, signal.direction.value):
             signal.direction = Direction.HOLD
             signal.stop_loss = signal.take_profit = signal.risk_reward = None
             signal.reasons.append("Configured economic surprise conflicts with technical direction")
         new_signal = self.repository.save_signal(signal)
         decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(signal.candle_time), "strategy":signal.strategy,
-                    "selection":signal.meta.get("selection"), "reasons": signal.reasons}
+                    "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
         self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
         self.repository.set_state(self.execution.scope + ":decision", decision)
         if new_signal:
@@ -178,6 +188,9 @@ class TradingEngine:
         tick = self.client.symbol_info_tick(symbol)
         price = float(tick.ask if signal.direction == Direction.BUY else tick.bid)
         req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.cfg.get("trading.max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
+        req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
+        if not self.running:
+            return signal
         result = self.execution.execute(req)
         self.repository.save_execution(signal, lot, result)
         if result.success:

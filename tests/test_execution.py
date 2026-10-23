@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 
 def request(sid="stable-signal"):
-    return OrderRequest("EURUSD", Direction.BUY, .3, 1.1, 1.099, 1.102, 20, signal_id=sid)
+    return OrderRequest("EURUSD", Direction.BUY, .3, 1.1, 1.099, 1.103, 20, signal_id=sid)
 
 
 class Client:

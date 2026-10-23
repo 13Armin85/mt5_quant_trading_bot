@@ -10,9 +10,12 @@ from backtest.metrics import calculate_metrics
 
 class BacktestEngine:
     """Bar-based SL/TP backtester with explicit spread/commission/slippage assumptions."""
-    def __init__(self, initial_equity: float = 10000, spread: float = 0.0, commission_per_lot: float = 0.0, slippage: float = 0.0, risk_fraction=.01, volume_step=.01, volume_min=.01, volume_max=100, tick_size=None) -> None:
+    def __init__(self, initial_equity: float = 10000, spread: float = 0.0, commission_per_lot: float = 0.0, slippage: float = 0.0, risk_fraction=.01, volume_step=.01, volume_min=.01, volume_max=100, tick_size=None, minimum_net_rr=0) -> None:
         self.initial_equity = initial_equity; self.spread = spread; self.commission_per_lot = commission_per_lot; self.slippage = slippage
         self.risk_fraction, self.volume_step, self.volume_min, self.volume_max, self.tick_size = risk_fraction, volume_step, volume_min, volume_max, tick_size
+        self.minimum_net_rr = minimum_net_rr
+        if not math.isfinite(minimum_net_rr) or minimum_net_rr<0:
+            raise ValueError("Invalid minimum_net_rr")
         if tick_size is not None and (not math.isfinite(tick_size) or tick_size <= 0):
             raise ValueError("Invalid tick_size")
         if not all(math.isfinite(v) for v in (initial_equity, spread, commission_per_lot, slippage, risk_fraction, volume_step, volume_min, volume_max)) or initial_equity <= 0 or min(spread, commission_per_lot, slippage) < 0 or not 0 < risk_fraction <= .01 or min(volume_step, volume_min) <= 0 or volume_max < volume_min:
@@ -56,6 +59,12 @@ class BacktestEngine:
             exposure = sum(t["risk"] for t in trades if t["exit_time"] >= entry_time)
             budget = max(0, equity * self.risk_fraction - exposure)
             loss_per_lot = (abs(entry - sl) + self.slippage) * value + self.commission_per_lot
+            net_reward = (abs(tp-entry)-self.slippage)*value-self.commission_per_lot
+            signal_minimum=float(getattr(s,"minimum_net_rr",0))
+            minimum_rr = max(self.minimum_net_rr,signal_minimum)
+            if not math.isfinite(signal_minimum) or signal_minimum<0 or net_reward/loss_per_lot+1e-8<minimum_rr:
+                self.rejections.append({"time":str(s.time),"reason":"Net reward/risk below minimum after next-bar fill and costs"})
+                continue
             raw = min(budget / loss_per_lot, self.volume_max, float(getattr(s, "volume", self.volume_max)))
             volume = RiskManager._floor_step(raw, self.volume_step)
             if not math.isfinite(volume) or volume < self.volume_min:

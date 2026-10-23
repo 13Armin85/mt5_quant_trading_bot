@@ -1,4 +1,4 @@
-MetaTrader5==5.0.6180
+MetaTrader5==5.0.6180; sys_platform == "win32"
 pandas==3.0.5
 numpy==2.3.2
 scipy==1.16.1

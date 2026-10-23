@@ -32,7 +32,7 @@ def paper_runtime(tmp_path, broker, risk_cfg, monkeypatch):
     monkeypatch.setattr("core.trading_engine.analyze_structure",lambda *a:{})
     monkeypatch.setattr("core.trading_engine.analyze_volume",lambda *a:{})
     engine=TradingEngine(cfg,broker,feed,risk,execution,repo,NewsFilter(cfg))
-    monkeypatch.setattr(engine.signal_engine,"generate",lambda *a:Signal("EURUSD",Direction.BUY,.8,1.1,1.099,1.102,signal_id="closed-bar-one"))
+    monkeypatch.setattr(engine.signal_engine,"generate",lambda *a:Signal("EURUSD",Direction.BUY,.8,1.1,1.099,1.103,signal_id="closed-bar-one"))
     return engine
 
 
@@ -57,7 +57,7 @@ def test_paper_positions_restore_and_manage_under_kill_switch(paper_runtime,brok
     assert len(engine.execution.paper_positions())==1
     restarted=TradingEngine(engine.cfg,broker,engine.feed,RiskManager(engine.cfg.get("trading"),broker),engine.execution,engine.repository,engine.news_filter)
     assert restarted.risk.state.day_start_equity==10000
-    broker.quote.bid=1.103; broker.quote.ask=1.1032
+    broker.quote.bid=1.104; broker.quote.ask=1.1042
     restarted.manage_positions()
     assert not engine.execution.paper_positions() and not broker.sent
 
@@ -90,3 +90,25 @@ def test_paper_settlement_is_idempotent(tmp_path):
     repo.settle_paper("paper:one","paper",1,1.1,50)
     repo.settle_paper("paper:one","paper",1,1.1,50)
     assert repo.get_state("paper:paper_pnl")==50
+
+
+def test_sigterm_stop_wakes_poll_and_persists_risk_without_orders(paper_runtime, broker, monkeypatch):
+    engine = paper_runtime
+    engine.risk.roll_state(10000)
+    monkeypatch.setattr(engine, "run_cycle", lambda *_: engine.stop())
+    engine.run_forever()
+    assert not engine.running and engine.stop_event.is_set()
+    assert engine.repository.get_state(engine.execution.scope + ":risk")["day_start_equity"] == 10000
+    assert not broker.sent
+
+
+def test_stop_during_analysis_prevents_new_entry(paper_runtime, broker, monkeypatch):
+    engine = paper_runtime
+    generate = engine.signal_engine.generate
+    def stop_after_analysis(*args):
+        result = generate(*args)
+        engine.stop()
+        return result
+    monkeypatch.setattr(engine.signal_engine, "generate", stop_after_analysis)
+    engine.process_symbol("EURUSD")
+    assert not engine.execution.paper_positions() and not broker.sent

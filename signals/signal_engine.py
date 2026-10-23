@@ -9,6 +9,7 @@ from analysis.volatility import score_volatility
 from signals.confidence_engine import ConfidenceEngine
 from signals.filters import signal_id
 from signals.selector import select_strategy, indicator_snapshot
+from signals.trade_plan import build_trade_plan
 from utils.types import Direction, MarketRegime, Signal
 
 
@@ -17,7 +18,7 @@ class SignalEngine:
         self.cfg = app_cfg
         self.confidence = ConfidenceEngine(app_cfg.get("strategy.weights", {}))
 
-    def generate(self, symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread_points):
+    def generate(self, symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread_points, market_context=None):
         macro_score, macro_reasons = score_trend(frames["macro"])
         trend_score, trend_reasons = score_trend(frames["trend"])
         momentum_score, momentum_reasons = score_momentum(frames["setup"])
@@ -37,23 +38,20 @@ class SignalEngine:
         selection_weight = float(self.cfg.get("strategy.selection.rule_weight", .70))
         confidence = selection_weight * selection.score + (1-selection_weight) * technical_score
         x = frames["entry"].iloc[-1]
-        entry = float(x.close); atr = float(x.atr)
-        stop_mult = float(self.cfg.get("strategy.stop_atr_multiple", 1.5))
-        if direction == Direction.BUY:
-            sl = entry - atr * stop_mult; tp = entry + (entry - sl) * float(self.cfg.get("trading.preferred_rr", 2.0))
-        elif direction == Direction.SELL:
-            sl = entry + atr * stop_mult; tp = entry - (sl - entry) * float(self.cfg.get("trading.preferred_rr", 2.0))
-        else:
-            sl = tp = None
+        plan = build_trade_plan(frames,direction,regime,family,self.cfg,market_context)
+        entry = plan.entry if plan.entry is not None else float(x.close)
+        sl,tp = plan.sl,plan.tp
         min_conf = float(self.cfg.get("trading.min_confidence", 0.70))
-        reasons = [rule_reason, f"Selected strategy={family}; independent groups={selection.groups}; suitability={selection.score:.3f}"] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
+        reasons = [rule_reason, f"Selected strategy={family}; independent groups={selection.groups}; suitability={selection.score:.3f}",plan.reason] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
+        if not plan.accepted:
+            direction = Direction.HOLD
         if not news_ok:
             reasons.append("High-impact/news-data safety block"); direction = Direction.HOLD
         if spread_points is None or spread_points > float(self.cfg.get("trading.max_spread_points", 40)):
             reasons.append("Spread safety block"); direction = Direction.HOLD
         if confidence < min_conf: reasons.append(f"Confidence {confidence:.2f} < {min_conf:.2f}"); direction = Direction.HOLD
-        rr = abs((tp-entry)/(entry-sl)) if direction != Direction.HOLD and sl != entry else None
-        if rr is not None and rr < float(self.cfg.get("trading.min_rr", 1.5)):
+        rr = plan.net_rr if direction != Direction.HOLD else None
+        if rr is not None and rr+1e-8 < float(self.cfg.get("trading.min_rr", 1.5)):
             reasons.append("Risk/reward below minimum"); direction = Direction.HOLD
         candle_time = frames["entry"].time.iloc[-1].to_pydatetime() if hasattr(frames["entry"].time.iloc[-1], "to_pydatetime") else datetime.now(timezone.utc)
         identity = "ensemble-v1" if self.cfg.get("strategy.family", "ensemble") in ("auto", "ensemble") else family
@@ -65,4 +63,6 @@ class SignalEngine:
                       volume_score=volume_score, structure_score=structure_score, price_action_score=pa["score"],
                       news_score=news_score, volatility_score=vol_score, spread_score=0.5 if spread_points is None else max(0.0, 1.0-min(spread_points/100,1)),
                       reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=family, signal_id=sid,
-                      meta={"selection":selection.to_dict(),"indicators":indicator_snapshot(frames),"technical_score":technical_score})
+                      meta={"selection":selection.to_dict(),"indicators":indicator_snapshot(frames),"technical_score":technical_score,
+                            "trade_plan":plan.to_dict(),"reward_risk_policy":self.cfg.get("strategy.reward_risk",{}),
+                            "risk_policy":{"risk_per_trade":self.cfg.get("trading.risk_per_trade",.005),"max_total_risk":self.cfg.get("trading.max_total_risk",.01)}})

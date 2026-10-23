@@ -2,6 +2,8 @@
 
 A modular Python 3.12+ trading framework for MetaTrader 5. The project is deliberately **PAPER-first**. A confidence score is not a guarantee of win rate or profit, and `LIVE` execution is blocked unless it is explicitly enabled.
 
+**Docker Desktop LIVE startup:** [راهنمای فارسی Docker](DOCKER_FA.md). On Windows, `Start-Live.cmd` starts the authenticated native MT5 bridge and the Linux `trader` service with `--mode live`. The bridge keeps the terminal password on the host; persistent SQLite history, single-writer leases and request deduplication survive container restarts. `Stop-Live.cmd` stops both components without closing broker positions. Docker Desktop and MT5 must be available; `ENABLE_LIVE_TRADING=true`, trading permissions, fresh quotes, news checks and a qualified signal are still required.
+
 **راهنمای اتصال حساب و اجرای ویندوز:** [راهنمای فارسی](SETUP_FA.md).
 
 **استراتژی‌ها، اندیکاتورها و انتخاب نهایی:** [راهنمای مقایسه ۱۲ روش](STRATEGIES_FA.md).
@@ -18,6 +20,8 @@ This read-only command reports the latest stored closed bars even outside market
 
 Runtime improvements include closed-candle validation, explicit unambiguous broker mapping, an account/mode-scoped persistent execution journal, broker account-currency sizing with costs, a 1% aggregate risk ceiling, restartable PAPER positions, SL/TP exits, optional break-even/trailing/partial exits, and an OS single-instance lock. Unknown sends suspend entries and are reconciled without resubmission. LIVE integration must be verified against the target broker; automated tests use isolated mock brokers.
 
+New entries default to 0.5% equity risk. Stops respect ATR and confirmed structural invalidation, capped at 3 ATR. Net reward targets default to 1.5 (range), 2 (trend), and 2.5 (breakout), with lower acceptable candidates considered before nearby support/resistance. Fees, Bid/Ask and entry/exit slippage are included; the minimum net ratio is rechecked before sending and after fills. These targets are configurable research assumptions, not empirically optimal values. JSON reports include `trade_plan` and `reward_risk_policy`; comparisons include `reward_risk_sensitivity`. See [the Persian guide](STRATEGIES_FA.md).
+
 ## Architecture
 
 ```text
@@ -31,7 +35,7 @@ The implementation includes MT5 connectivity, multi-timeframe data, indicator an
 ## Safety defaults
 
 - `trading.mode: PAPER`
-- `risk_per_trade: 0.01`
+- `risk_per_trade: 0.005` (0.5% per entry; hard ceiling 1%)
 - `max_total_risk: 0.01`
 - `max_daily_loss: 0.03`
 - `max_weekly_loss: 0.06`

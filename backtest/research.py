@@ -15,7 +15,7 @@ from utils.types import Direction
 TF = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}
 
 
-def generate_signals(bars, cfg, contract_value, family, stop_multiple=None):
+def generate_signals(bars, cfg, contract_value, family, stop_multiple=None, costs=None):
     bars = bars.copy()
     bars["time"] = pd.to_datetime(bars.time, utc=True)
     DataFeed.validate_bars(bars)
@@ -24,6 +24,10 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None):
     if stop_multiple is not None:
         settings["strategy"]["stop_atr_multiple"] = stop_multiple
     local = AppConfig(settings=settings, symbols=cfg.symbols, strategy=cfg.strategy, env=cfg.env)
+    costs = costs or {}
+    market_context = {"contract_value_per_price":contract_value,"spread_price":float(costs.get("spread",0)),
+                      "exit_slippage":float(costs.get("slippage",0)),"commission_per_lot":float(costs.get("commission_per_lot",0)),
+                      "cost_basis":"historical_constant_contract_value"}
     tfs = local.get("strategy.timeframes")
     step = TF[tfs["entry"]]
     diffs = bars.time.diff().dropna().dt.total_seconds()
@@ -58,13 +62,14 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None):
         structure = analyze_structure(frames["setup"])
         volume = analyze_volume(frames["setup"], local.get("strategy.indicators", {}))
         signal = engine.generate("research", frames, regime, structure, volume, True,
-                                 "Historical news not supplied; technical-only research", .5, 0)
+                                 "Historical news not supplied; technical-only research", .5, 0,market_context)
         if signal.direction == Direction.HOLD:
             continue
         result.append({"time": now - pd.Timedelta(seconds=step), "direction": signal.direction.value,
                        "entry": signal.entry_price, "sl": signal.stop_loss, "tp": signal.take_profit,
-                       "contract_value_per_price": contract_value, "signal_id": signal.signal_id})
-    return pd.DataFrame(result, columns=["time", "direction", "entry", "sl", "tp", "contract_value_per_price", "signal_id"])
+                       "contract_value_per_price": contract_value, "signal_id": signal.signal_id,
+                       "minimum_net_rr":signal.meta["trade_plan"]["minimum_net_rr"]})
+    return pd.DataFrame(result, columns=["time", "direction", "entry", "sl", "tp", "contract_value_per_price", "signal_id","minimum_net_rr"])
 
 
 def compare_strategies(bars, cfg, contract_value, engine_kwargs):
@@ -77,7 +82,7 @@ def compare_strategies(bars, cfg, contract_value, engine_kwargs):
               "split": {"train_end": str(first), "validation_end": str(second)}, "families": {}}
     windows = build_windows(pd.DatetimeIndex(bars.time))
     for family in (*FAMILIES,"ensemble"):
-        signals = generate_signals(bars, cfg, contract_value, family)
+        signals = generate_signals(bars, cfg, contract_value, family,costs=engine_kwargs)
         results = {}
         for name, start, end in (("train", bars.time.iloc[0], first), ("validation", first, second), ("test", second, bars.time.iloc[-1] + pd.Timedelta(seconds=1))):
             segment = bars[(bars.time >= start) & (bars.time < end)]
@@ -94,8 +99,14 @@ def compare_strategies(bars, cfg, contract_value, engine_kwargs):
         results["parameter_sensitivity"] = {}
         baseline = float(cfg.get("strategy.stop_atr_multiple", 1.5))
         for multiple in (baseline * .8, baseline * 1.2):
-            changed = generate_signals(bars, cfg, contract_value, family, multiple)
+            changed = generate_signals(bars, cfg, contract_value, family, multiple,costs=engine_kwargs)
             _, results["parameter_sensitivity"][str(multiple)] = BacktestEngine(**engine_kwargs).run(bars, changed)
+        results["reward_risk_sensitivity"] = {}
+        for target in cfg.get("strategy.reward_risk.candidates",[1.5,2,2.5,3]):
+            varied = cfg.model_copy(deep=True)
+            varied.settings.setdefault("strategy",{}).setdefault("reward_risk",{}).update(range_target=target,trend_target=target,breakout_target=target)
+            rr_signals = generate_signals(bars,varied,contract_value,family,costs=engine_kwargs)
+            _,results["reward_risk_sensitivity"][str(target)] = BacktestEngine(**engine_kwargs).run(bars,rr_signals)
         results["walk_forward"] = []
         for window in windows:
             start, end = pd.Timestamp(window.validation_end, tz="UTC"), pd.Timestamp(window.test_end, tz="UTC")

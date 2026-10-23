@@ -8,6 +8,7 @@ from analysis.volume import analyze_volume
 from core.data_feed import DataFeed
 from core.symbol_resolver import SymbolResolver
 from signals.signal_engine import SignalEngine
+from signals.trade_plan import pricing_context
 
 
 def scan_symbol(cfg, client, logical):
@@ -23,7 +24,7 @@ def scan_symbol(cfg, client, logical):
     structure = analyze_structure(frames["setup"])
     volume = analyze_volume(frames["setup"],cfg.get("strategy.indicators",{}))
     signal = SignalEngine(cfg).generate(symbol,frames,regime,structure,volume,False,
-        "Read-only technical snapshot; news not validated at historical decision time",0,feed.spread_points(symbol))
+        "Read-only technical snapshot; news not validated at historical decision time",0,feed.spread_points(symbol),pricing_context(client,symbol,cfg.get("trading",{})))
     return {"symbol":symbol,"logical_symbol":logical,"generated_at":datetime.now(timezone.utc).isoformat(),
             "read_only":True,"orders_enabled":False,"fresh_tick":feed.is_tick_fresh(symbol),
             "regime":regime.value,"candles":{role:str(frame.time.iloc[-1]) for role,frame in frames.items()},

@@ -23,6 +23,8 @@ def cfg():
     result.settings["strategy"]["timeframes"]={role:"M5" for role in ("macro","trend","setup","entry")}
     result.settings["trading"]["min_confidence"]=.01
     result.settings["strategy"]["pullback_atr"]=2
+    # Keep the signal-causality fixture populated; structure constraints have separate tests.
+    result.settings["strategy"]["reward_risk"]["respect_structure"]=False
     return result
 
 

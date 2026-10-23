@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import load_config, ROOT
 from core.data_feed import DataFeed
 from core.execution import ExecutionEngine
-from core.mt5_client import MT5Client
+from core.mt5_remote import create_mt5_client
 from core.risk_manager import RiskManager
 from core.trading_engine import TradingEngine
 from database.repository import Repository
@@ -32,14 +33,14 @@ def build_runtime(mode=None):
         raise ValueError("Use main.py backtest --bars ... for offline backtesting")
     if selected == TradingMode.LIVE and not cfg.env.enable_live_trading:
         raise ValueError("LIVE blocked: set ENABLE_LIVE_TRADING=true explicitly")
-    client=MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC")); client.initialize()
+    client=create_mt5_client(cfg, trading=selected == TradingMode.LIVE); client.initialize()
     feed=DataFeed(client,int(cfg.get("trading.max_tick_age_seconds",15)),cfg.symbols)
     risk=RiskManager(cfg.get("trading",{}),client)
     repo=Repository(cfg.env.database_url)
     account = client.account_info()
     identity = hashlib.sha256(f"{account.server}:{account.login}".encode()).hexdigest()[:16]
     scope = f"{selected.value}:{identity}:{int(cfg.get('trading.magic', 260912))}"
-    execution=ExecutionEngine(client,selected,cfg.env.enable_live_trading,ROOT / cfg.get("trading.kill_switch_path","kill_switch.flag"),risk,repo,cfg.get("trading",{}),scope)
+    execution=ExecutionEngine(client,selected,cfg.env.enable_live_trading,ROOT / (cfg.env.kill_switch_path or cfg.get("trading.kill_switch_path","kill_switch.flag")),risk,repo,cfg.get("trading",{}),scope)
     news=NewsFilter(cfg)
     return cfg,client,TradingEngine(cfg,client,feed,risk,execution,repo,news)
 
@@ -78,7 +79,7 @@ def main():
         from analysis.scanner import scan_symbol
         from backtest.report import save_report
         cfg = load_config();cfg.validate_runtime()
-        client = MT5Client(cfg.env,cfg.get("trading.mt5_time_zone","UTC"))
+        client = create_mt5_client(cfg)
         try:
             client.initialize()
             result = scan_symbol(cfg,client,args.symbol)
@@ -90,7 +91,7 @@ def main():
         return
     if args.command == "symbols":
         cfg = load_config()
-        client = MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC"))
+        client = create_mt5_client(cfg)
         try:
             client.initialize()
             instruments = client.symbols_get()
@@ -113,7 +114,8 @@ def main():
         bars = pd.read_csv(args.bars)
         bars["time"] = pd.to_datetime(bars.time, utc=True)
         kwargs = dict(spread=args.spread, slippage=args.slippage, commission_per_lot=args.commission,
-                      volume_step=args.volume_step, volume_min=args.min_volume, volume_max=args.max_volume)
+                      volume_step=args.volume_step, volume_min=args.min_volume, volume_max=args.max_volume,
+                      risk_fraction=float(cfg.get("trading.risk_per_trade",.005)),minimum_net_rr=max(float(cfg.get("trading.min_rr",1.5)),float(cfg.get("strategy.reward_risk.minimum_net_rr",1.5))))
         if not args.signals and (args.contract_value is None or args.contract_value <= 0):
             parser.error("--contract-value is required without --signals; use broker account-currency value per one price unit/lot")
         if args.compare:
@@ -121,7 +123,7 @@ def main():
                 parser.error("--compare requires --contract-value")
             report = compare_strategies(bars, cfg, args.contract_value, kwargs)
         else:
-            signals = pd.read_csv(args.signals) if args.signals else generate_signals(bars, cfg, args.contract_value, args.family)
+            signals = pd.read_csv(args.signals) if args.signals else generate_signals(bars, cfg, args.contract_value, args.family,costs=kwargs)
             test = BacktestEngine(**kwargs)
             trades, metrics = test.run(bars, signals)
             report = {"metrics": metrics, "rejections": test.rejections, "news_validated": False, "costs": kwargs}
@@ -130,12 +132,15 @@ def main():
         print(save_report(report, args.output))
         return
     if args.command == "run":
-        with RuntimeLock(ROOT / ".bot.lock"):
+        with RuntimeLock(load_config().env.runtime_lock_path):
             cfg,client,engine=build_runtime(args.mode)
+            previous = {sig: signal.signal(sig, lambda *_: engine.stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
             try:
                 engine.run_forever()
             finally:
                 client.shutdown()
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
         return
     cfg,client,engine=build_runtime("paper")
     try:

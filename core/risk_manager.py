@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from loguru import logger
+from signals.trade_plan import net_reward_risk
 
 
 @dataclass(slots=True)
@@ -95,6 +96,16 @@ class RiskManager:
         if volume < min_v:
             return 0.0
         return round(volume, 8)
+
+    def reward_risk(self,symbol,direction,entry,sl,tp,info):
+        side = getattr(direction,"value",direction)
+        if self.client is not None:
+            profit = lambda start,end:self.client.order_calc_profit(0 if side=="BUY" else 1,symbol,1.0,start,end)
+        else:
+            value = float(info.trade_tick_value)/float(info.trade_tick_size)
+            profit = lambda start,end:(1 if side=="BUY" else -1)*(end-start)*value
+        return net_reward_risk(side,entry,sl,tp,profit,float(self.cfg.get("commission_per_lot",0)),
+                               float(self.cfg.get("slippage_points",0))*float(info.point))
 
     def theoretical_loss(self, entry: float, sl: float, volume: float, symbol_info) -> float:
         tick_size = float(getattr(symbol_info, "trade_tick_size", 0) or getattr(symbol_info, "point", 0))

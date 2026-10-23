@@ -47,6 +47,8 @@ class ExecutionEngine:
             return False, "Invalid stop/target direction"
         if self.mode == TradingMode.LIVE and (self.repo is None or self.risk is None or not req.signal_id):
             return False, "LIVE requires persistent journal, risk manager and signal ID"
+        if req.minimum_net_rr is not None and (not math.isfinite(req.minimum_net_rr) or req.minimum_net_rr<=0):
+            return False,"Invalid minimum net reward/risk"
         return True, "OK"
 
     def _prepare(self, req):
@@ -81,6 +83,11 @@ class ExecutionEngine:
         minimum = max(int(info.trade_stops_level), int(info.trade_freeze_level)) * info.point
         if min(abs(liquidation - req.sl), abs(liquidation - req.tp)) < minimum or not (req.sl < liquidation < req.tp if req.direction == Direction.BUY else req.tp < liquidation < req.sl):
             raise ValueError("Broker stops/freeze distance violated")
+        entry_buffer = float(self.cfg.get("slippage_points",0))*float(info.point) if self.mode==TradingMode.LIVE else 0
+        worst_entry = req.price + (1 if req.direction==Direction.BUY else -1)*entry_buffer
+        economics = self.risk.reward_risk(req.symbol,req.direction,worst_entry,req.sl,req.tp,info)
+        if economics["net_rr"]+1e-8<max(float(self.cfg.get("min_rr",1.5)),req.minimum_net_rr or 0):
+            raise ValueError("Final net reward/risk below minimum after costs and current quote")
         exposure, positions, orders = self.risk.account_exposure()
         if len(positions) + len(orders) >= int(self.cfg.get("max_positions", 3)):
             raise ValueError("Maximum positions reached")
@@ -108,11 +115,11 @@ class ExecutionEngine:
         allowed, reason = self.risk.can_trade(equity, exposure / equity)
         if not allowed:
             raise ValueError(reason)
-        req.volume = min(req.volume, self.risk.calculate_volume(req.symbol, req.price, req.sl, equity, info, exposure, req.direction))
+        req.volume = min(req.volume, self.risk.calculate_volume(req.symbol, worst_entry, req.sl, equity, info, exposure, req.direction))
         req.volume = self.risk._floor_step(req.volume, float(info.volume_step))
         if req.volume < info.volume_min:
             raise ValueError("Remaining risk budget below broker minimum")
-        planned = self.risk.loss_per_lot(req.symbol, req.price, req.sl, info, req.direction) * req.volume
+        planned = self.risk.loss_per_lot(req.symbol, worst_entry, req.sl, info, req.direction) * req.volume
         margin = self.client.order_calc_margin(0 if req.direction == Direction.BUY else 1, req.symbol, req.volume, req.price)
         free_margin = float(account.margin_free)
         if self.mode == TradingMode.PAPER:
@@ -147,6 +154,9 @@ class ExecutionEngine:
                        "magic": req.magic, "comment": (req.signal_id or req.comment)[:31],
                        "initial_risk": abs(req.price - req.sl), "created": datetime.now(timezone.utc).isoformat()}
             payload["requested_volume"] = req.volume
+            payload["minimum_net_rr"] = max(float(self.cfg.get("min_rr",1.5)),req.minimum_net_rr or 0)
+            if self.risk is not None:
+                payload["reward_risk"] = self.risk.reward_risk(req.symbol,req.direction,req.price,req.sl,req.tp,info)
             policy = filling_mode(info) if self.mode == TradingMode.LIVE else None
         except (ValueError, ArithmeticError) as exc:
             return ExecutionResult(False, None, None, str(exc))
@@ -226,6 +236,8 @@ class ExecutionEngine:
         if valid:
             actual_risk = self.risk.loss_per_lot(p.symbol, float(p.price_open), float(p.sl), info, payload["direction"]) * float(p.volume)
             valid = actual_risk <= payload["risk"] + 1e-7
+            economics = self.risk.reward_risk(p.symbol,payload["direction"],float(p.price_open),float(p.sl),float(p.tp),info)
+            valid = valid and economics["net_rr"]+1e-8>=payload.get("minimum_net_rr",float(self.cfg.get("min_rr",1.5)))
         if valid:
             return True
         self.close_position(p, payload["magic"])

@@ -2,7 +2,7 @@ trading:
   mt5_time_zone: Europe/Helsinki # Observed LiteFinance server wall-clock timestamps; DST-aware. Use UTC for standard UTC APIs.
   mode: PAPER
   poll_seconds: 2
-  risk_per_trade: 0.01
+  risk_per_trade: 0.005
   max_total_risk: 0.01
   max_drawdown: 0.10
   max_positions: 3
@@ -18,7 +18,7 @@ trading:
   max_consecutive_losses: 3
   min_confidence: 0.70
   min_rr: 1.5
-  preferred_rr: 2.0
+  preferred_rr: 2.0 # Legacy setting; adaptive net targets below define new plans.
   max_deviation_points: 20
   max_tick_age_seconds: 15
   allow_hedging: false
@@ -57,6 +57,17 @@ strategy:
       volatility: 0.10
       entry_trigger: 0.10
   stop_atr_multiple: 1.5
+  reward_risk:
+    minimum_net_rr: 1.5
+    range_target: 1.5
+    trend_target: 2.0
+    breakout_target: 2.5
+    candidates: [1.5, 2.0, 2.5, 3.0]
+    respect_structure: true
+    structure_buffer_atr: 0.10
+    max_stop_atr: 3.0
+    swing_window: 3
+    structure_lookback: 100
   breakout_lookback: 20
   pullback_atr: 0.5
   confidence_mode: RULE

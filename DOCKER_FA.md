@@ -1,0 +1,121 @@
+# اجرای خودکار LIVE با Docker Desktop
+
+با دوبار کلیک روی `Start-Live.cmd`، رابط MT5 روی ویندوز آماده و کانتینر `trader` ساخته و اجرا می‌شود. فرمان پیش‌فرض کانتینر `python main.py run --mode live` است: قیمت را پیوسته می‌گیرد، استراتژی‌های فعال را روی کندل بسته بررسی می‌کند، و فقط در صورت تأیید سیگنال و کنترل‌های ریسک سفارش واقعی می‌فرستد. LIVE به معنی معامله در حساب متصل است؛ دمو یا واقعی بودن آن را خود حساب تعیین می‌کند.
+
+## ساختار اجرا
+
+```text
+Docker: موتور تحلیل، انتخاب استراتژی، مدیریت ریسک و ژورنال
+                  │ JSON + توکن محلی
+                  ▼
+Windows: رابط MT5 ← ترمینال LiteFinance ← حساب معاملاتی
+```
+
+بسته فعلی MetaTrader5 برای ویندوز منتشر شده و اتصالش به ترمینال محلی است؛ نصب مستقیم آن در کانتینر لینوکس کافی نیست. این پیاده‌سازی از ترمینال موجود ویندوز استفاده می‌کند و به Wine نیاز ندارد. [بسته رسمی MetaTrader5](https://pypi.org/project/MetaTrader5/)، [مستندات اتصال به ترمینال](https://www.mql5.com/en/docs/python_metatrader5/mt5initialize_py).
+
+رابط فقط روی `127.0.0.1:18765` گوش می‌دهد و کانتینر از آدرس ویژه `host.docker.internal` استفاده می‌کند. این تنظیم برای Docker Desktop روی ویندوز است؛ برای سرور لینوکس جداگانه طراحی نشده است. پورت عمومی، Port Forward یا باز کردن فایروال برای اینترنت لازم نیست. [شبکه Docker Desktop](https://docs.docker.com/desktop/features/networking/networking-how-tos/).
+
+## آماده‌سازی یک‌باره
+
+۱. Docker Desktop را باز کنید؛ موتور **Linux containers / WSL 2** باید آماده باشد. دستور زیر باید `linux` برگرداند:
+
+```powershell
+docker info --format '{{.OSType}}'
+```
+
+۲. ترمینال MT5 مربوط به LiteFinance را باز کنید و با حساب موردنظر وارد شوید. در MT5، **Algo Trading** را فعال کنید و در `Tools > Options > Expert Advisors` گزینه `Disable automated trading via external Python API` را غیرفعال کنید. اطلاعات `MT5_LOGIN`، `MT5_SERVER`، `MT5_PASSWORD` و `MT5_PATH` در `.env` ویندوز باید صحیح باشد.
+
+۳. در همان `.env` اجازه اجرای واقعی را تنظیم کنید:
+
+```dotenv
+ENABLE_LIVE_TRADING=true
+```
+
+تنظیم `trading.mode: PAPER` داخل YAML مانع این اجرا نیست؛ فرمان صریح `--mode live` اولویت دارد. `MT5_BRIDGE_URL` را برای اجرای مستقیم روی ویندوز در `.env` قرار ندهید؛ Compose آن را برای کانتینر تعیین می‌کند.
+
+۴. محیط ویندوز قبلی پروژه باید موجود باشد؛ اگر نیست، Python 3.12 نسخه ۶۴ بیتی را نصب و این دستورات را اجرا کنید:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+۵. اجرای قبلی ربات در PowerShell را با `Ctrl+C` متوقف کنید. رابط ویندوز و ربات مستقیم از قفل مشترک استفاده می‌کنند تا هم‌زمان معامله نکنند.
+
+۶. فیلتر اخبار فعلی `fail_closed` است. برای اجازه ورود باید منبع تقویم اقتصادی معتبر تنظیم شود: `ECONOMIC_API_URL` برای ارائه‌دهنده `generic`، یا `news.provider: tradingeconomics` همراه `ECONOMIC_API_KEY` معتبر. Docker این کنترل را حذف نمی‌کند؛ نبود داده اخبار، قیمت تازه، مجوز معامله یا سیگنال مناسب به معنی انتظار/HOLD است. جزئیات ارائه‌دهنده و قالب JSON در [راهنمای اتصال](SETUP_FA.md) آمده است.
+
+## Start و Stop
+
+از ریشه پروژه در PowerShell:
+
+```powershell
+.\Start-Live.cmd
+```
+
+همچنین می‌توانید روی این فایل دوبار کلیک کنید. ساخت اولیه به اینترنت نیاز دارد و ممکن است چند دقیقه طول بکشد. پس از اجرای موفق، سرویس `trader` زیر پروژه `mt5-quant` در Docker Desktop دیده می‌شود. تحلیل‌ها در SQLite و لاگ‌ها ثبت می‌شوند؛ گزارش snapshot قبلی `xauusd_analysis.json` فقط با دستور `analyze` دوباره ساخته می‌شود.
+
+```powershell
+docker compose ps
+docker compose logs -f --tail 100 trader
+docker compose exec trader python main.py health
+docker compose exec trader python main.py analyze --symbol XAUUSD --output reports/xauusd_analysis.json
+```
+
+`health` و `analyze` سفارش ارسال نمی‌کنند. گزارش طلا از همان پوشه `reports` در ویندوز قابل مشاهده است.
+
+برای توقف موتور، دکمه Stop داکر یا این دستور را بزنید:
+
+```powershell
+docker compose stop trader
+```
+
+تا وقتی رابط ویندوز فعال است، زدن Start روی کانتینر موجود دوباره تحلیل و معامله LIVE را شروع می‌کند. برای توقف **موتور و رابط ویندوز با هم**:
+
+```powershell
+.\Stop-Live.cmd
+```
+
+توقف، موقعیت‌های باز را نمی‌بندد؛ SL/TP نزد بروکر باقی می‌ماند و مدیریت فعال trailing تا شروع مجدد متوقف است. `docker compose down` نیز داده‌های bind mount را پاک نمی‌کند. پوشه `.docker` یا ژورنال را هنگام وجود معاملات یا سفارش‌های نامشخص پاک نکنید.
+
+## توقف ورود جدید
+
+```powershell
+New-Item -ItemType File -Force .docker/control/kill_switch.flag
+```
+
+این فایل ورودهای جدید را می‌بندد؛ مدیریت موقعیت‌های قبلی ادامه دارد. برای اجازه مجدد:
+
+```powershell
+Remove-Item -LiteralPath .docker/control/kill_switch.flag
+```
+
+اگر kill switch قدیمی ریشه پروژه هنگام آماده‌سازی وجود داشته باشد، به مسیر داکر هم منتقل می‌شود و خودکار برداشته نمی‌شود.
+
+## ماندگاری و بازیابی
+
+- SQLite داخل کانتینر: `/app/data/trading_bot.db`؛ روی ویندوز: `.docker/data/trading_bot.db`.
+- اولین Start، ژورنال SQLite قبلی را با API پشتیبان‌گیری SQLite کپی و `DATABASE_URL` در `.env` را به `sqlite:///.docker/data/trading_bot.db` تغییر می‌دهد. فایل اصلی حفظ می‌شود. اجرای مستقیم بعدی هم همین ژورنال را می‌خواند. ژورنال موجود داکر هرگز خودکار جایگزین نمی‌شود.
+- `logs` و `reports` روی میزبان حفظ می‌شوند؛ تنظیمات `config` به صورت فقط‌خواندنی mount می‌شوند. پس از تغییر YAML، کانتینر و رابط را متوقف و Start کنید؛ پس از تغییر کد نیز `Start-Live.cmd` تصویر را بازسازی می‌کند.
+- رمز حساب و مسیر ترمینال وارد تصویر یا محیط کانتینر نمی‌شود. توکن تصادفی محلی در `.docker/bridge.token` ساخته و به صورت فایل secret خوانده می‌شود. این پوشه و `.env` را منتشر نکنید؛ توکن اجازه دسترسی به رابط معاملاتی می‌دهد.
+- هم موتور و هم رابط، نتیجه نامشخص سفارش را بدون ارسال مجدد نگه می‌دارند. پس از قطع ناگهانی، ژورنال و تاریخچه بروکر بررسی می‌شود. قفل انحصاری رابط پس از کرش حداکثر پنج دقیقه برای اتصال یک موتور جدید باقی می‌ماند.
+- `restart: unless-stopped` موتور را پس از خروج غیرمنتظره دوباره راه می‌اندازد. healthcheck فقط تازگی heartbeat را می‌سنجد؛ وضعیت unhealthy به تنهایی دستور restart نیست. منتظر بودن برای باز شدن بازار با خرابی برنامه یکی نیست.
+
+رابط ویندوز باید در نشست کاربر فعال باشد و سیستم نباید Sleep شود. ری‌استارت Docker با ریبوت کامل ویندوز فرق دارد: بعد از ورود مجدد به ویندوز، MT5 و Docker Desktop را آماده کنید و `Start-Live.cmd` را بزنید؛ اجرای بدون ورود کاربر یا روشن بودن سیستم خاموش پیاده‌سازی نشده است.
+
+## رفع اشکال
+
+- `Docker Engine` در دسترس نیست: Docker Desktop را اجرا و آماده شدن موتور Linux را صبر کنید.
+- `Another bot instance holds the runtime lock`: اجرای مستقیم قبلی را متوقف کنید؛ فایل قفل را حذف نکنید، خود قفل با خروج پردازش آزاد می‌شود.
+- `Waiting for Windows MT5 bridge / exclusive LIVE session`: رابط ویندوز متوقف شده، اتصال MT5 آماده نیست، یا موتور قبلی هنوز lease دارد. `logs/bridge.stderr.log` را ببینید. برای راه‌اندازی دوباره هر دو بخش `Start-Live.cmd` را اجرا کنید.
+- پل فقط‌خواندنی از قبل فعال است: آن را با `Stop-Live.cmd` متوقف و دوباره Start کنید.
+- `trade_allowed: false`: مجوزهای Algo Trading / Python API یا حساب را در MT5 بررسی کنید.
+- `Economic calendar unavailable`: منبع اخبار تنظیم نشده؛ موتور برای ورود جدید منتظر می‌ماند.
+- `MARKET_CLOSED`: بازار بسته است؛ از قیمت قدیمی برای معامله استفاده نمی‌شود.
+
+برای دیدن رابط در حالت foreground و بررسی خطا، ابتدا موتور و رابط قبلی را متوقف کنید، سپس در یک پنجره باز اجرا کنید:
+
+```powershell
+.\.venv\Scripts\python.exe -m core.mt5_bridge --allow-live
+```
+
+پنجره باید باز بماند. در پنجره دیگر می‌توانید `docker compose start trader` را اجرا کنید.

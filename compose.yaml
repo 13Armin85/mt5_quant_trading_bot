@@ -1,0 +1,50 @@
+name: mt5-quant
+services:
+  trader:
+    build: .
+    image: mt5-quant-trader:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    command: ["run", "--mode", "live"]
+    environment:
+      MT5_BRIDGE_URL: http://host.docker.internal:18765
+      MT5_BRIDGE_TOKEN_FILE: /run/secrets/mt5_bridge_token
+      MT5_LOGIN: ${MT5_LOGIN:-}
+      MT5_SERVER: ${MT5_SERVER:-}
+      ENABLE_LIVE_TRADING: ${ENABLE_LIVE_TRADING:-false}
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      ECONOMIC_API_KEY: ${ECONOMIC_API_KEY:-}
+      NEWS_API_URL: ${NEWS_API_URL:-}
+      ECONOMIC_API_URL: ${ECONOMIC_API_URL:-}
+      DATABASE_URL: sqlite:////app/data/trading_bot.db
+      RUNTIME_LOCK_PATH: /app/data/.bot.lock
+      KILL_SWITCH_PATH: /app/control/kill_switch.flag
+    secrets:
+      - mt5_bridge_token
+    volumes:
+      - ./.docker/data:/app/data
+      - ./.docker/control:/app/control
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-m", "docker_runtime.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+secrets:
+  mt5_bridge_token:
+    file: ./.docker/bridge.token

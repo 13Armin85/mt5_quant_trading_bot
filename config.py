@@ -28,6 +28,10 @@ class EnvSettings(BaseSettings):
     economic_api_url: str | None = Field(default=None, alias="ECONOMIC_API_URL")
     database_url: str = Field(default="sqlite:///trading_bot.db", alias="DATABASE_URL")
     enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
+    mt5_bridge_url: str | None = Field(default=None, alias="MT5_BRIDGE_URL")
+    mt5_bridge_token_file: str = Field(default=str(ROOT / ".docker" / "bridge.token"), alias="MT5_BRIDGE_TOKEN_FILE")
+    runtime_lock_path: str = Field(default=str(ROOT / ".bot.lock"), alias="RUNTIME_LOCK_PATH")
+    kill_switch_path: str | None = Field(default=None, alias="KILL_SWITCH_PATH")
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
     discord_webhook_url: str | None = Field(default=None, alias="DISCORD_WEBHOOK_URL")
@@ -101,6 +105,27 @@ class AppConfig(BaseModel):
             value = float(self.get(f"strategy.{name}", 1.5))
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"strategy.{name} must be positive")
+        for key,default in (("min_rr",1.5),("preferred_rr",2.0)):
+            value=float(self.get(f"trading.{key}",default))
+            if not math.isfinite(value) or value<=0:
+                raise ValueError(f"trading.{key} must be positive")
+        rr=self.get("strategy.reward_risk",{})
+        minimum=float(rr.get("minimum_net_rr",1.5))
+        if not math.isfinite(minimum) or minimum<float(self.get("trading.min_rr",1.5)):
+            raise ValueError("reward_risk.minimum_net_rr must be finite and >= trading.min_rr")
+        for key,default in (("range_target",1.5),("trend_target",2.0),("breakout_target",2.5)):
+            value=float(rr.get(key,default))
+            if not math.isfinite(value) or value<minimum or value>10:
+                raise ValueError(f"reward_risk.{key} must be between the minimum net RR and 10")
+        candidates=rr.get("candidates",[1.5,2,2.5,3])
+        if not isinstance(candidates,list) or not candidates or any(not math.isfinite(float(v)) or not minimum<=float(v)<=10 for v in candidates):
+            raise ValueError("reward_risk.candidates must be finite net RR values between minimum and 10")
+        buffer=float(rr.get("structure_buffer_atr",.1));maximum=float(rr.get("max_stop_atr",3))
+        if not math.isfinite(buffer) or buffer<0 or not math.isfinite(maximum) or maximum<float(self.get("strategy.stop_atr_multiple",1.5)):
+            raise ValueError("Invalid reward_risk structure buffer or maximum stop distance")
+        window=int(rr.get("swing_window",3));lookback=int(rr.get("structure_lookback",100))
+        if window<1 or lookback<2*window+1 or lookback>min(300,int(self.get("trading.default_bars",700))):
+            raise ValueError("Invalid reward_risk swing window/lookback")
         fraction = float(self.get("position_management.partial_close_fraction", .5))
         if not math.isfinite(fraction) or not 0 < fraction < 1:
             raise ValueError("partial_close_fraction must be between 0 and 1")

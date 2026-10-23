@@ -67,6 +67,7 @@ class OrderRequest:
     magic: int = 260912
     comment: str = "quant-bot"
     signal_id: str | None = None
+    minimum_net_rr: float | None = None
 
 
 @dataclass(slots=True)
