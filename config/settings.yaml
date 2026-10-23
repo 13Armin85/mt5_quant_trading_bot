@@ -1,0 +1,74 @@
+trading:
+  mode: PAPER
+  poll_seconds: 2
+  risk_per_trade: 0.01
+  max_total_risk: 0.03
+  max_daily_loss: 0.03
+  max_weekly_loss: 0.06
+  max_consecutive_losses: 3
+  min_confidence: 0.70
+  min_rr: 1.5
+  preferred_rr: 2.0
+  max_deviation_points: 20
+  max_tick_age_seconds: 15
+  allow_hedging: false
+  duplicate_signal_ttl_minutes: 1440
+  kill_switch_path: kill_switch.flag
+  default_bars: 700
+  paper_starting_balance: 10000
+  correlation_threshold: 0.80
+  max_correlated_positions: 1
+
+news:
+  enabled: true
+  fail_closed: true
+  block_before_minutes: 30
+  block_after_minutes: 30
+  stale_after_minutes: 60
+
+strategy:
+  confidence_mode: RULE
+  timeframes:
+    macro: H4
+    trend: H1
+    setup: M15
+    entry: M5
+  weights:
+    trend: 0.20
+    structure: 0.20
+    momentum: 0.15
+    volume: 0.15
+    price_action: 0.10
+    volatility: 0.10
+    news: 0.10
+  indicators:
+    ema_fast: 20
+    ema_mid: 50
+    ema_slow: 200
+    rsi_period: 14
+    adx_period: 14
+    atr_period: 14
+    bollinger_period: 20
+    volume_sma_period: 20
+  filters:
+    max_spread_multiplier: 2.0
+    min_adx_trending: 22
+    min_relative_volume: 0.85
+
+position_management:
+  break_even_enabled: true
+  break_even_trigger_r: 1.0
+  trailing_enabled: true
+  trailing_start_r: 1.5
+  trailing_atr_multiple: 1.0
+  partial_close_enabled: false
+  partial_close_r: 1.5
+  partial_close_fraction: 0.5
+
+validation:
+  minimum_trades: 200
+  minimum_profit_factor: 1.30
+  maximum_drawdown: 0.25
+  require_positive_expectancy: true
+  require_positive_oos: true
+  require_calibration: true

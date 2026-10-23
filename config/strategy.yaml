@@ -1,0 +1,25 @@
+regimes:
+  TRENDING_BULLISH:
+    enabled: true
+    strategy: trend_following
+  TRENDING_BEARISH:
+    enabled: true
+    strategy: trend_following
+  RANGING:
+    enabled: true
+    strategy: mean_reversion
+  BREAKOUT:
+    enabled: true
+    strategy: breakout
+  HIGH_VOLATILITY:
+    enabled: false
+    strategy: none
+  LOW_VOLATILITY:
+    enabled: false
+    strategy: none
+  NEWS_EVENT:
+    enabled: false
+    strategy: none
+  UNCERTAIN:
+    enabled: false
+    strategy: none
