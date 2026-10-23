@@ -24,3 +24,13 @@ symbols:
     aliases: [XAUUSD, XAUUSDm, GOLD]
     currencies: [XAU, USD]
     extra_news_currencies: [USD]
+  NAS100:
+    broker_symbol: NQ
+    # Index sessions differ from forex; require fresh broker ticks without inferring opening times.
+    aliases: [NAS100, NQ, US100, NASDAQ100]
+    # US economic news affects the index; this is not a two-currency FX pair.
+    currencies: [USD]
+  US30:
+    broker_symbol: YM
+    aliases: [US30, YM, DJ30, DJIA]
+    currencies: [USD]
