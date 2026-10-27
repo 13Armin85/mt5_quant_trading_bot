@@ -10,6 +10,7 @@ from signals.confidence_engine import ConfidenceEngine
 from signals.filters import signal_id
 from signals.selector import select_strategy, indicator_snapshot
 from signals.trade_plan import build_trade_plan
+from monitoring.decisions import config_revision, reason_code
 from utils.types import Direction, MarketRegime, Signal
 
 
@@ -17,6 +18,7 @@ class SignalEngine:
     def __init__(self, app_cfg) -> None:
         self.cfg = app_cfg
         self.confidence = ConfidenceEngine(app_cfg.get("strategy.weights", {}))
+        self.revision = config_revision(app_cfg)
 
     def generate(self, symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread_points, market_context=None):
         macro_score, macro_reasons = score_trend(frames["macro"])
@@ -43,19 +45,28 @@ class SignalEngine:
         sl,tp = plan.sl,plan.tp
         min_conf = float(self.cfg.get("trading.min_confidence", 0.70))
         reasons = [rule_reason, f"Selected strategy={family}; independent groups={selection.groups}; suitability={selection.score:.3f}",plan.reason] + macro_reasons + trend_reasons + structure["reasons"] + momentum_reasons + volume["reasons"] + pa["reasons"] + vol_reasons + [news_reason]
+        codes = []
+        if selection.direction == Direction.HOLD:
+            codes.append("DIRECTION_CONFLICT" if "Conflicting" in rule_reason else
+                "SCORE" if any(a.eligible for a in selection.assessments) else "NO_SETUP")
         if not plan.accepted:
+            codes.append(reason_code(plan.reason))
             direction = Direction.HOLD
         if not news_ok:
+            codes.insert(0,"NEWS")
             reasons.append("High-impact/news-data safety block"); direction = Direction.HOLD
-        if spread_points is None or spread_points > float(self.cfg.get("trading.max_spread_points", 40)):
+        if spread_points is None or spread_points > float((market_context or {}).get("max_spread_points", self.cfg.get("trading.max_spread_points", 40))):
+            codes.insert(0,"SPREAD")
             reasons.append("Spread safety block"); direction = Direction.HOLD
-        if confidence < min_conf: reasons.append(f"Confidence {confidence:.2f} < {min_conf:.2f}"); direction = Direction.HOLD
+        if confidence < min_conf:
+            codes.append("SCORE")
+            reasons.append(f"Confidence {confidence:.2f} < {min_conf:.2f}"); direction = Direction.HOLD
         rr = plan.net_rr if direction != Direction.HOLD else None
         if rr is not None and rr+1e-8 < float(self.cfg.get("trading.min_rr", 1.5)):
             reasons.append("Risk/reward below minimum"); direction = Direction.HOLD
         candle_time = frames["entry"].time.iloc[-1].to_pydatetime() if hasattr(frames["entry"].time.iloc[-1], "to_pydatetime") else datetime.now(timezone.utc)
         identity = "ensemble-v1" if self.cfg.get("strategy.family", "ensemble") in ("auto", "ensemble") else family
-        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, identity)
+        sid = signal_id(symbol, self.cfg.get("strategy.timeframes.entry", "M5"), direction.value, candle_time, identity + ":" + self.revision)
         if direction == Direction.HOLD:
             sl = tp = rr = None
         return Signal(symbol=symbol, direction=direction, confidence=confidence, entry_price=entry, stop_loss=sl, take_profit=tp,
@@ -64,5 +75,6 @@ class SignalEngine:
                       news_score=news_score, volatility_score=vol_score, spread_score=0.5 if spread_points is None else max(0.0, 1.0-min(spread_points/100,1)),
                       reasons=reasons, timeframe=self.cfg.get("strategy.timeframes.entry", "M5"), candle_time=candle_time, strategy=family, signal_id=sid,
                       meta={"selection":selection.to_dict(),"indicators":indicator_snapshot(frames),"technical_score":technical_score,
+                            "reason_codes":list(dict.fromkeys(codes)),"config_revision":self.revision,"score_type":"uncalibrated_rule_suitability",
                             "trade_plan":plan.to_dict(),"reward_risk_policy":self.cfg.get("strategy.reward_risk",{}),
                             "risk_policy":{"risk_per_trade":self.cfg.get("trading.risk_per_trade",.005),"max_total_risk":self.cfg.get("trading.max_total_risk",.01)}})

@@ -33,6 +33,9 @@ def render():
     c4.metric("Heartbeat age", f"{age:.0f}s" if age is not None else "Waiting")
     if age is None or age > 180:
         st.warning("The engine is stopped or its heartbeat is stale. The information below is its last saved state.")
+    if heartbeat.get("risk_state"):
+        risk_state=heartbeat["risk_state"]
+        st.write("Risk status:",risk_state.get("status","ACTIVE"),"· Resume:",risk_state.get("resume_at") or "Operator review")
     news = heartbeat.get("news", {})
     st.subheader("News and economic calendar")
     st.write({"background_running":news.get("background_running",False),
@@ -56,6 +59,8 @@ def render():
         if not isinstance(analysis, dict):
             continue
         st.write(analysis["symbol"], analysis.get("strategy"), analysis.get("direction"))
+        if analysis.get("reason"):
+            st.caption(analysis["reason"])
         st.caption(f"Analyzed: {analysis.get('updated_at','')} · {analysis.get('news',{}).get('reason','')}")
         selection = analysis.get("selection") or {}
         st.caption(selection.get("reason", ""))

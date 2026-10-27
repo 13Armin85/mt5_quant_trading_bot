@@ -65,6 +65,7 @@ def pricing_context(client, symbol, trading_cfg):
     if info is None or tick is None:
         raise ValueError("Cannot build trade plan without broker specification and quote")
     return {"point":float(info.point),"tick_size":float(info.trade_tick_size),
+            "max_spread_points":float(trading_cfg.get("max_spread_points",40)),
             "spread_price":float(tick.ask-tick.bid),
             "commission_per_lot":float(trading_cfg.get("commission_per_lot",0)),
             "exit_slippage":float(trading_cfg.get("slippage_points",0))*float(info.point),
@@ -149,6 +150,21 @@ def build_trade_plan(frames, direction, regime, strategy, cfg, context=None):
             raise ValueError("Account-currency stop/profit estimate unavailable")
         unit_value = probe/atr
         loss = -stop_pnl+commission
+        if cfg.get("strategy.experiment","baseline")=="range_midpoint" and regime==MarketRegime.RANGING:
+            midpoint = float(x.get("bb_mid",float("nan")))
+            target = _snap(midpoint-sign*buffer,tick,side=="SELL")
+            if not math.isfinite(target) or sign*(target-entry)<=0:
+                raise ValueError("Range midpoint is not a valid target")
+            economics = net_reward_risk(side,entry,sl,target,profit,commission,slip)
+            if economics["net_rr"]+1e-8<minimum:
+                raise ValueError("Range midpoint net reward/risk below unchanged minimum")
+            if plan.obstacle is not None and sign*(target-plan.obstacle)>0:
+                raise ValueError("Range midpoint target crosses a nearer structure obstacle")
+            plan.accepted=True;plan.tp=target;plan.net_rr=economics["net_rr"];plan.gross_rr=economics["gross_rr"]
+            plan.target_net_rr=plan.net_rr;plan.break_even_win_rate=economics["break_even_win_rate"]
+            plan.loss_per_lot=economics["loss_per_lot"];plan.reward_per_lot=economics["reward_per_lot"]
+            plan.reason="Range midpoint target after unchanged cost and risk checks"
+            return plan
         for wanted in candidates:
             reward_distance = (wanted*loss+commission)/unit_value+slip
             tp = _snap(entry+sign*reward_distance,tick,side=="BUY")

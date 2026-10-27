@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from database.models import Base, SignalRecord, Trade, ExecutionAttempt, RuntimeState
+from database.models import Base, SignalRecord, Trade, ExecutionAttempt, RuntimeState, DecisionRecord
 
 
 class Repository:
@@ -39,6 +39,9 @@ class Repository:
 
     def save_execution(self, signal, lot: float, result) -> None:
         with Session(self.engine) as s:
+            if s.scalar(select(Trade.id).where(Trade.signal_id == (signal.signal_id or ""),
+                    Trade.status == result.status, Trade.reason == "; ".join(signal.reasons + [result.message]))) is not None:
+                return
             s.add(Trade(signal_id=signal.signal_id or "", symbol=signal.symbol, direction=signal.direction.value,
                         entry=result.filled_price or signal.entry_price, sl=signal.stop_loss, tp=signal.take_profit, lot=result.filled_volume or lot,
                         risk=result.planned_risk, confidence=signal.confidence, market_regime=signal.market_regime.value,
@@ -62,6 +65,15 @@ class Repository:
 
     def claim_execution(self, key, payload):
         with Session(self.engine) as s:
+            previous = s.get(ExecutionAttempt,key)
+            if previous is not None:
+                if previous.status != "REJECTED" or not json.loads(previous.payload).get("retryable_before_send"):
+                    return False
+                previous.status = "SUBMITTING"
+                previous.payload = json.dumps(payload)
+                previous.updated = datetime.now(timezone.utc)
+                s.commit()
+                return True
             s.add(ExecutionAttempt(key=key, status="SUBMITTING", payload=json.dumps(payload)))
             try:
                 s.commit()
@@ -94,20 +106,73 @@ class Repository:
             s.merge(RuntimeState(key=key, payload=json.dumps(value)))
             s.commit()
 
-    def close_trade(self, ticket, price, profit, status="CLOSED"):
+    def states(self, prefix):
+        with Session(self.engine) as s:
+            return {row.key:json.loads(row.payload) for row in s.scalars(select(RuntimeState))
+                    if row.key.startswith(prefix)}
+
+    def record_decision(self, scope, decision):
+        # Polling and restarts update the same event; they never inflate the funnel.
+        key = f"{scope}:{decision['evaluation_id']}:{decision['stage']}:{decision['reason_code']}"
+        with Session(self.engine) as s:
+            s.merge(DecisionRecord(key=key, scope=scope, evaluation_id=decision["evaluation_id"],
+                symbol=decision["symbol"], strategy=decision.get("strategy", "unknown"),
+                regime=decision.get("regime", "UNCERTAIN"), session=decision.get("session", "closed"),
+                stage=decision["stage"], reason_code=decision["reason_code"], payload=json.dumps(decision, default=str)))
+            s.commit()
+
+    def decision_funnel(self, scope=None):
+        columns = [DecisionRecord.symbol, DecisionRecord.strategy, DecisionRecord.regime,
+                   DecisionRecord.session, DecisionRecord.stage, DecisionRecord.reason_code]
+        query = select(*columns, func.count(func.distinct(DecisionRecord.evaluation_id))).group_by(*columns)
+        if scope:
+            query = query.where(DecisionRecord.scope == scope)
+        with Session(self.engine) as s:
+            return [dict(zip(["symbol", "strategy", "regime", "session", "stage", "reason_code", "setups"], row))
+                    for row in s.execute(query).all()]
+
+    @staticmethod
+    def _settle_risk(session, scope, state):
+        if state is not None:
+            from dataclasses import asdict
+            session.merge(RuntimeState(key=scope + ":risk", payload=json.dumps(asdict(state))))
+
+    def settle_live(self, key, scope, ticket, price, profit, risk_state, reason=None):
+        with Session(self.engine) as s:
+            attempt = s.get(ExecutionAttempt, key)
+            if attempt is None or attempt.status == "CLOSED":
+                return False
+            for row in s.scalars(select(Trade).where(Trade.ticket == ticket,
+                    Trade.status.in_(["OPEN", "PARTIAL", "PROTECTION_FAILURE", "UNKNOWN"]))):
+                row.exit_price, row.profit, row.status = price, profit, "CLOSED"
+                row.profit_r = profit / row.risk if row.risk else None
+                if reason:
+                    row.reason = (row.reason or "") + "; Exit: " + reason
+            attempt.status = "CLOSED"
+            self._settle_risk(s, scope, risk_state)
+            s.commit()
+            return True
+
+    def close_trade(self, ticket, price, profit, status="CLOSED", reason=None):
         with Session(self.engine) as s:
             rows = s.scalars(select(Trade).where(Trade.ticket == ticket, Trade.status.in_(["OPEN", "PAPER_OPEN", "PARTIAL"]))).all()
             for row in rows:
                 row.exit_price, row.profit, row.status = price, profit, status
                 row.profit_r = profit / row.risk if row.risk else None
+                if reason:
+                    row.reason = (row.reason or "") + "; Exit: " + reason
             s.commit()
 
-    def settle_paper(self, key, scope, ticket, price, profit):
+    def settle_paper(self, key, scope, ticket, price, profit, reason=None, risk_state=None):
         # One transaction prevents double-booking realized P/L after a restart.
         with Session(self.engine) as s:
             attempt = s.get(ExecutionAttempt, key)
             if attempt.status != "PAPER_OPEN":
-                return
+                return False
+            if reason:
+                payload = json.loads(attempt.payload)
+                payload["close_reason"] = reason
+                attempt.payload = json.dumps(payload)
             attempt.status = "PAPER_CLOSED"
             state_key = scope + ":paper_pnl"
             state = s.get(RuntimeState, state_key)
@@ -118,8 +183,12 @@ class Repository:
             for trade in s.scalars(select(Trade).where(Trade.ticket == ticket, Trade.status == "PAPER_OPEN")):
                 total = profit + json.loads(attempt.payload).get("partial_realized", 0)
                 trade.exit_price, trade.profit, trade.status = price, total, "PAPER_CLOSED"
+                if reason:
+                    trade.reason = (trade.reason or "") + "; Exit: " + reason
                 trade.profit_r = total / trade.risk if trade.risk else None
+            self._settle_risk(s, scope, risk_state)
             s.commit()
+            return True
 
     def partial_paper(self, key, scope, payload, profit):
         with Session(self.engine) as s:

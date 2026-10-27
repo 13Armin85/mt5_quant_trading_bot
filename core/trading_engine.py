@@ -4,7 +4,7 @@ import json
 import math
 from threading import Event
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 
@@ -16,10 +16,13 @@ from signals.signal_engine import SignalEngine
 from core.position_manager import PositionManager
 from core.symbol_resolver import SymbolResolver
 from core.risk_manager import RiskState
+from core.correlation import CorrelationGuard
 from core.mt5_client import MT5Error
 from core.execution import filling_mode
 from signals.filters import spread_is_valid
 from signals.trade_plan import pricing_context
+from monitoring.decisions import config_revision, evaluation_id, reason_code
+from analysis.sessions import active_sessions
 from utils.types import Direction, OrderRequest, TradingMode
 
 
@@ -40,6 +43,14 @@ class TradingEngine:
         self.resolved = {}
         self.frames_cache = {}
         self.quote_statuses = {}
+        self.revision = config_revision(app_cfg)
+        self.risk.symbols = app_cfg.symbols
+        self.risk.mode = execution.mode.value
+        self.correlation = CorrelationGuard(float(app_cfg.get("trading.correlation_threshold", .8)),
+            int(app_cfg.get("trading.max_correlated_positions", 1)),
+            int(app_cfg.get("trading.correlation_minimum_history", 60)), app_cfg.symbols)
+        self.execution.portfolio_check = self.portfolio_check
+        self.execution.before_send = self.before_send
         stored = repository.get_state(execution.scope + ":risk")
         if stored:
             self.risk.state = RiskState(**stored)
@@ -83,39 +94,99 @@ class TradingEngine:
         equity = float(account.equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()
         self.risk.roll_state(equity)
         attempts = self.repository.attempts(self.execution.scope)
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = self.risk.clock().date().isoformat()
         self.risk.state.trades_today = max(self.risk.state.trades_today, sum(json.loads(a.payload)["created"][:10] == today and a.status != "REJECTED" for a in attempts))
         self.persist_risk()
         self.manage_positions()
         self.execution.reconcile()
+        resume = self.repository.get_state(self.execution.scope + ":resume_request")
+        if resume and self.risk.state.last_resume_request != resume["id"]:
+            exposure, _, _ = self.risk.account_exposure()
+            if self.execution.mode == TradingMode.PAPER:
+                exposure += sum(p["risk"] for p in self.execution.paper_positions())
+            equity = float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()
+            ok, reason = self.risk.request_resume(resume["id"],equity,exposure/equity,self.execution.kill_switch_path.exists())
+            self.repository.set_state(self.execution.scope + ":resume_result", {**resume,"accepted":ok,"result":reason})
+            self.persist_risk()
         # News polling also runs when every instrument has a closed/stale market.
         self.news_filter.refresh()
-        for symbol in symbols:
+        candidates = []
+        for symbol in sorted(symbols):
             if not self.running:
                 break
             try:
-                self.process_symbol(symbol)
-            except ValueError as exc:
+                signal = self.process_symbol(symbol, submit=False)
+                if signal is not None and signal.direction != Direction.HOLD:
+                    candidates.append((symbol, signal))
+            except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
                 logger.warning("{} data/entry rejected: {}", symbol, exc)
-                self.repository.set_state(self.execution.scope + ":decision", {"symbol":symbol,"reason":str(exc),"direction":"HOLD"})
+                self.record_unavailable(self.resolved.get(symbol,symbol),str(exc),reason_code(exc))
+        # All proposals exist before any entry. Ties are resolved by name, never scan order.
+        candidates.sort(key=lambda item: (-item[1].confidence, -(item[1].risk_reward or 0), item[1].symbol, item[1].strategy))
+        for logical, signal in candidates:
+            if not self.running:
+                break
+            try:
+                self.submit_signal(logical, signal)
+            except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
+                self.record_decision(signal.meta["runtime_decision"], "risk", str(exc))
         self.persist_risk()
         exposure, _, _ = self.risk.account_exposure()
         if self.execution.mode == TradingMode.PAPER:
             exposure += sum(p["risk"] for p in self.execution.paper_positions())
         status = {"time": datetime.now(timezone.utc).isoformat(), "connected": self.client.health_check(),
                   "mode": self.execution.mode.value, "symbols": self.resolved,
+                  "scope":self.execution.scope,
                   "equity": float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity(),
                   "planned_open_risk": exposure,
                   "quotes":self.quote_statuses,
                   "news":self.news_filter.status(),
+                  "position_management": self.repository.get_state(self.execution.scope + ":position_management"),
+                  "risk_state": asdict(self.risk.state),
                   "last_decision": self.repository.get_state(self.execution.scope + ":decision", "Waiting for data")}
         self.repository.set_state("heartbeat", status)
         logger.info("heartbeat {}", json.dumps(status))
 
-    def process_symbol(self, logical_symbol: str):
+    def record_decision(self, decision, stage, reason=None, code=None, **extra):
+        result = {**decision, **extra, "stage": stage, "reason_code": code or reason_code(reason),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}
+        if reason:
+            result.update(direction="HOLD", reason=reason)
+        self.repository.record_decision(self.execution.scope, result)
+        self.repository.set_state(self.execution.scope + ":decision", result)
+        analysis = self.repository.get_state("analysis:" + result["symbol"], {})
+        self.repository.set_state("analysis:" + result["symbol"], {**analysis, **result})
+        if stage in {"risk","execution"}:
+            waiting = result["reason_code"] if result["reason_code"] in {"LOSS_PAUSE","LOSS_LIMIT","DAILY_COUNT","KILL_SWITCH"} else None
+            self.track_wait(result["symbol"],"risk",waiting)
+        return result
+
+    def track_wait(self, symbol, category, code=None):
+        key = f"{self.execution.scope}:wait:{category}:{symbol}"
+        state = self.repository.get_state(key,{"totals_seconds":{}})
+        now = self.risk.clock()
+        previous = state.get("reason_code")
+        if previous and state.get("last_observed"):
+            delta = (now-datetime.fromisoformat(state["last_observed"])).total_seconds()
+            if 0<=delta<=float(self.cfg.get("trading.poll_seconds",2))*2:
+                state["totals_seconds"][previous] = state["totals_seconds"].get(previous,0)+delta
+        if previous != code:
+            state["started_at"] = now.isoformat() if code else None
+        state.update(symbol=symbol,category=category,reason_code=code,last_observed=now.isoformat())
+        self.repository.set_state(key,state)
+
+    def record_unavailable(self, symbol, reason, code, **extra):
+        self.track_wait(symbol,"availability",code)
+        decision={"symbol":symbol,"direction":"HOLD","reason":reason,"reason_code":code,
+            "stage":"availability","updated_at":self.risk.clock().isoformat(),**extra}
+        self.repository.set_state(self.execution.scope+":decision",decision)
+        analysis=self.repository.get_state("analysis:"+symbol,{})
+        self.repository.set_state("analysis:"+symbol,{**analysis,**decision})
+
+    def process_symbol(self, logical_symbol: str, submit=True):
         if self.execution.kill_switch_path.exists():
             logger.warning("Kill switch active")
-            self.repository.set_state(self.execution.scope + ":decision", {"symbol":logical_symbol,"direction":"HOLD","reason":"Kill switch active"})
+            self.record_unavailable(self.resolved.get(logical_symbol,logical_symbol),"Kill switch active","KILL_SWITCH")
             return None
         if logical_symbol not in self.resolved:
             self.resolved[logical_symbol] = self.resolver.resolve(logical_symbol)
@@ -124,22 +195,10 @@ class TradingEngine:
         self.quote_statuses[symbol] = quote_status
         self.feed.log_tick_status(quote_status)
         if not quote_status["fresh"]:
-            self.repository.set_state(self.execution.scope + ":decision", {"symbol":symbol,"direction":"HOLD","reason":quote_status["reason"],"quote_status":quote_status["status"]})
+            self.record_unavailable(symbol,quote_status["reason"],quote_status["status"],quote_status=quote_status["status"])
             return None
-        frames: dict[str, object] = {}
-        tf_cfg = self.cfg.get("strategy.timeframes", {})
-        for role, tf in tf_cfg.items():
-            df = self.feed.bars(symbol, tf, int(self.cfg.get("trading.default_bars", 700)))
-            if df.empty:
-                logger.warning("{} rejected: no {} data", symbol, tf)
-                return None
-            cached = self.frames_cache.get((symbol, role))
-            if cached is not None and cached.time.iloc[-1] == df.time.iloc[-1] and cached.close.iloc[-1] == df.close.iloc[-1]:
-                frames[role] = cached
-            else:
-                frames[role] = add_indicators(df, self.cfg.get("strategy.indicators", {}))
-                self.frames_cache[(symbol, role)] = frames[role]
-        entry_df = frames["entry"]
+        frames = self.load_frames(symbol)
+        self.track_wait(symbol,"availability")
         regime = detect_regime(frames["trend"], self.cfg.get("strategy.filters", {}))
         structure = analyze_structure(frames["setup"])
         volume = analyze_volume(frames["setup"], self.cfg.get("strategy.indicators", {}))
@@ -147,74 +206,189 @@ class TradingEngine:
         spread = self.feed.spread_points(symbol)
         historical = list(frames["entry"].get("spread", []))[-100:]
         spread_ok, _ = spread_is_valid(spread, historical, float(self.cfg.get("strategy.filters.max_spread_multiplier", 2)))
-        if not spread_ok:
-            news_ok, news_reason = False, "Abnormal spread; entry suspended"
-        context = pricing_context(self.client,symbol,self.cfg.get("trading",{}))
+        context = pricing_context(self.client,symbol,self.risk.policy(symbol))
         signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
+        if not spread_ok:
+            signal.direction = Direction.HOLD
+            signal.stop_loss = signal.take_profit = signal.risk_reward = None
+            signal.reasons.append("Abnormal spread; entry suspended")
+            signal.meta.setdefault("reason_codes",[]).insert(0,"SPREAD")
         if signal.direction != Direction.HOLD and not self.news_filter.direction_allowed(logical_symbol, signal.direction.value):
             signal.direction = Direction.HOLD
             signal.stop_loss = signal.take_profit = signal.risk_reward = None
             signal.reasons.append("Configured economic surprise conflicts with technical direction")
+            signal.meta.setdefault("reason_codes",[]).insert(0,"NEWS")
         new_signal = self.repository.save_signal(signal)
-        decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(signal.candle_time), "strategy":signal.strategy,
+        candle = signal.candle_time or frames["entry"].time.iloc[-1]
+        candle_datetime = candle.to_pydatetime() if hasattr(candle,"to_pydatetime") else candle
+        seconds = {"M1":60,"M5":300,"M15":900,"M30":1800,"H1":3600,"H4":14400,"D1":86400}[self.cfg.get("strategy.timeframes.entry","M5")]
+        decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(candle), "strategy":signal.strategy,
+                    "evaluation_id":evaluation_id(symbol, candle, signal.strategy, self.revision), "config_revision":self.revision,
+                    "regime":getattr(signal.market_regime,"value","UNCERTAIN"),
+                    "session":", ".join(active_sessions(candle_datetime + timedelta(seconds=seconds))) or "closed",
                     "news":{"allowed":news_ok,"reason":news_reason},
+                    "spread":{"points":spread,"allowed":spread_ok},
                     "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
         self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
         self.repository.set_state(self.execution.scope + ":decision", decision)
+        signal.meta["runtime_decision"] = decision
+        for assessment in (signal.meta.get("selection") or {}).get("assessments", []):
+            method = assessment["strategy"]
+            self.repository.record_decision(self.execution.scope, {**decision, "strategy":method,
+                "evaluation_id":evaluation_id(symbol,candle,method,self.revision), "stage":"setup",
+                "reason_code":"SETUP" if assessment["eligible"] else reason_code("; ".join(assessment["reasons"])),
+                "assessment":assessment})
+        if signal.direction == Direction.HOLD:
+            blocked = signal.meta.get("reason_codes", [])
+            self.record_decision(decision, "analysis", "; ".join(signal.reasons), blocked[0] if blocked else "NO_SETUP")
+        else:
+            self.record_decision(decision, "analysis", code="CANDIDATE")
         if new_signal:
             logger.info("signal {}", json.dumps({k:v for k,v in decision.items() if k!="selection"}, ensure_ascii=False))
         if signal.direction == Direction.HOLD:
             return signal
         if not news_ok:
+            self.record_decision(decision, "news", news_reason, "NEWS")
+            return signal
+        if submit:
+            self.submit_signal(logical_symbol, signal)
+        return signal
+
+    def correlation_matrix(self, exposure):
+        import pandas as pd
+        closes = {symbol: df.set_index("time").close for (symbol, role), df in self.frames_cache.items() if role == "trend"}
+        for symbol, _ in exposure:
+            if symbol in closes:
+                continue
+            try:
+                frame = self.feed.bars(symbol, self.cfg.get("strategy.timeframes.trend", "H1"),
+                    int(self.cfg.get("trading.correlation_lookback",250)) + 1)
+                if not frame.empty:
+                    closes[symbol] = frame.set_index("time").close
+            except (ValueError, MT5Error, TimeoutError, ConnectionError):
+                pass # Explicit mapped-factor fallback handles absent broker history.
+        return self.correlation.matrix(closes, int(self.cfg.get("trading.correlation_lookback",250))) if closes else pd.DataFrame()
+
+    def portfolio_check(self, req, positions, orders, simulated):
+        exposure = [(p.symbol, "BUY" if int(p.type) in (0,2,4,6) else "SELL") for p in [*positions, *orders]]
+        exposure += [(p["symbol"],p["direction"]) for p in simulated]
+        allowed, reason = self.correlation.can_open(req.symbol, exposure, self.correlation_matrix(exposure), req.direction)
+        if not allowed:
+            raise ValueError(reason)
+
+    def before_send(self, req):
+        from core.symbol_policy import symbol_metadata
+        logical, _ = symbol_metadata(req.symbol, self.cfg.symbols)
+        ok, reason, _ = self.news_filter.evaluate(logical or req.symbol)
+        if not ok or not self.news_filter.direction_allowed(logical or req.symbol, req.direction.value):
+            raise ValueError("News changed before order submission: " + reason)
+        frame = self.frames_cache.get((req.symbol, "entry"))
+        history = list(frame.get("spread", []))[-100:] if frame is not None else []
+        allowed, _ = spread_is_valid(self.feed.spread_points(req.symbol), history,
+            float(self.cfg.get("strategy.filters.max_spread_multiplier",2)))
+        if not allowed:
+            raise ValueError("Abnormal spread before order submission")
+
+    def submit_signal(self, logical_symbol, signal):
+        decision = signal.meta["runtime_decision"]
+        symbol = signal.symbol
+        self.risk.mode = self.execution.mode.value
+        cooldown = self.repository.get_state(self.execution.scope + ":defensive_exit:" + symbol)
+        if cooldown and datetime.now(timezone.utc) < datetime.fromisoformat(cooldown["until"]):
+            self.record_decision(decision, "risk", "Cooldown after defensive exit", cooldown=cooldown)
             return signal
         account = self.client.account_info()
         if account is None:
             raise ValueError("Account unavailable")
-        equity = float(account.equity) if self.execution.mode == TradingMode.LIVE else float(self.cfg.get("trading.paper_starting_balance", 10000)) + self.repository.get_state(self.execution.scope + ":paper_pnl", 0)
+        equity = float(account.equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()
         exposure, positions, orders = self.risk.account_exposure()
         simulated = self.execution.paper_positions() if self.execution.mode == TradingMode.PAPER else []
         exposure += sum(p["risk"] for p in simulated)
-        currencies = self.news_filter.currencies_for(logical_symbol)
-        if any(not self.news_filter.currencies_for(p.symbol) for p in [*positions, *orders]):
-            raise ValueError("Existing symbol has no currency/correlation mapping")
-        shared = [p for p in [*positions, *orders] if currencies & self.news_filter.currencies_for(p.symbol)]
-        shared += [p for p in simulated if currencies & self.news_filter.currencies_for(p["symbol"])]
-        if len(shared) >= int(self.cfg.get("trading.max_correlated_positions", 1)):
-            logger.info("{} rejected: shared currency exposure", symbol)
+        if any(p.symbol==symbol for p in [*positions,*orders]) or any(p["symbol"]==symbol for p in simulated):
+            self.record_decision(decision,"risk","Existing symbol exposure; duplicate entry blocked","DUPLICATE")
             return signal
         allowed, reason = self.risk.can_trade(equity, exposure / equity)
         if not allowed:
             logger.warning("{} rejected: {}", symbol, reason)
+            self.record_decision(decision, "risk", reason)
             return signal
         info = self.client.symbol_info(symbol)
         if info is None:
+            self.record_decision(decision, "risk", "Symbol specification unavailable")
             return signal
         lot = self.risk.calculate_volume(symbol, signal.entry_price, signal.stop_loss, equity, info, exposure, signal.direction)
         if lot <= 0:
             logger.warning("{} rejected: calculated volume below broker minimum", symbol)
+            self.record_decision(decision, "risk", "Calculated volume below broker minimum", "MIN_LOT")
             return signal
         tick = self.client.symbol_info_tick(symbol)
         price = float(tick.ask if signal.direction == Direction.BUY else tick.bid)
-        req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.cfg.get("trading.max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
+        req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.risk.policy(symbol).get("max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
         req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
         if not self.running:
             return signal
         # A new snapshot may have arrived while sizing/preparing this entry.
         latest_ok, latest_reason, _ = self.news_filter.evaluate(logical_symbol)
         if not latest_ok or not self.news_filter.direction_allowed(logical_symbol, signal.direction.value):
-            self.repository.set_state(self.execution.scope + ":decision", {**decision,"direction":"HOLD",
-                "news":{"allowed":False,"reason":latest_reason},"reason":"News changed before order submission"})
+            self.record_decision(decision,"news","News changed before order submission", "NEWS",
+                news={"allowed":False,"reason":latest_reason})
             return signal
         result = self.execution.execute(req)
-        self.repository.save_execution(signal, lot, result)
+        if not result.message.startswith("Duplicate signal"):
+            self.repository.save_execution(signal, lot, result)
         if result.success:
             self.risk.state.trades_today += 1
         self.persist_risk()
-        self.repository.set_state(self.execution.scope + ":decision", {**decision, "execution": result.message, "risk": result.planned_risk, "volume": result.filled_volume})
+        self.record_decision(decision,"execution", None if result.success else result.message,
+            "FILLED" if result.success else reason_code(result.message), execution=result.message,
+            risk=result.planned_risk,volume=result.filled_volume)
         logger.info("{} {} confidence={:.2f} result={}", symbol, signal.direction.value, signal.confidence, result.message)
         return signal
 
+    def load_frames(self, symbol):
+        frames = {}
+        for role, tf in self.cfg.get("strategy.timeframes", {}).items():
+            df = self.feed.bars(symbol, tf, int(self.cfg.get("trading.default_bars", 700)))
+            if df.empty:
+                raise ValueError(f"{symbol}: no {tf} data")
+            cached = self.frames_cache.get((symbol, role))
+            if cached is not None and cached.time.iloc[-1] == df.time.iloc[-1] and cached.close.iloc[-1] == df.close.iloc[-1]:
+                frames[role] = cached
+            else:
+                frames[role] = add_indicators(df, self.cfg.get("strategy.indicators", {}))
+                self.frames_cache[(symbol, role)] = frames[role]
+        return frames
+
+    def position_decision(self, symbol, direction, entry, current, sl, meta, frames):
+        # The price-based safety exit must work even if chart data is unavailable.
+        decision = self.position_manager.decide(direction, entry, current, sl, meta["initial_risk"])
+        if decision.close:
+            return decision
+        if symbol not in frames:
+            try:
+                frames[symbol] = self.load_frames(symbol)
+            except (MT5Error, ValueError, TimeoutError, ConnectionError) as exc:
+                logger.warning("{} position analysis unavailable: {}", symbol, exc)
+                frames[symbol] = {}
+        chart = frames[symbol]
+        reason = self.position_manager.invalidation_reason(direction, chart, meta.get("created"))
+        atr = float(chart["entry"].atr.iloc[-1]) if "entry" in chart and "atr" in chart["entry"] else None
+        return self.position_manager.decide(direction, entry, current, sl, meta["initial_risk"], atr,
+            meta.get("partial_done", False) or meta.get("partial_state") is not None, invalidation_reason=reason)
+
+    def record_position_exit(self, symbol, ticket, reason):
+        self.repository.set_state(self.execution.scope + ":position_management", {
+            "symbol": symbol, "ticket": int(ticket), "action": "CLOSE", "reason": reason,
+            "time": datetime.now(timezone.utc).isoformat()})
+        if reason not in {"Stop loss", "Take profit"}:
+            until = datetime.now(timezone.utc) + timedelta(
+                seconds=float(self.cfg.get("position_management.defensive_exit_cooldown_seconds", 900)))
+            self.repository.set_state(self.execution.scope + ":defensive_exit:" + symbol, {
+                "until": until.isoformat(), "reason": reason, "ticket": int(ticket)})
+        logger.warning("Position exit ticket={} symbol={} reason={}", ticket, symbol, reason)
+
     def manage_positions(self):
+        frames = {}
         if self.execution.mode == TradingMode.PAPER:
             for p in self.execution.paper_positions():
                 if not self.feed.is_tick_fresh(p["symbol"]):
@@ -224,27 +398,33 @@ class TradingEngine:
                 current = float(tick.bid if buy else tick.ask)
                 hit_sl = current <= p["sl"] if buy else current >= p["sl"]
                 hit_tp = current >= p["tp"] if buy else current <= p["tp"]
-                if hit_sl or hit_tp:
-                    exit_price = current if hit_sl else p["tp"]
-                    slip = float(self.cfg.get("trading.slippage_points", 0)) * self.client.symbol_info(p["symbol"]).point
+                decision = None if hit_sl or hit_tp else self.position_decision(
+                    p["symbol"], p["direction"], p["price"], current, p["sl"], p, frames)
+                if hit_sl or hit_tp or decision.close:
+                    reason = "Stop loss" if hit_sl else "Take profit" if hit_tp else decision.reason
+                    exit_price = p["tp"] if hit_tp and not hit_sl else current
+                    slip = float(self.risk.policy(p["symbol"]).get("slippage_points", 0)) * self.client.symbol_info(p["symbol"]).point
                     exit_price += -slip if buy else slip
                     profit = self.client.order_calc_profit(0 if buy else 1, p["symbol"], p["volume"], p["price"], exit_price)
                     if profit is None or not math.isfinite(profit):
                         raise ValueError("Paper close calculation unavailable")
-                    profit -= float(self.cfg.get("trading.commission_per_lot", 0)) * p["volume"]
-                    self.repository.settle_paper(p["key"], self.execution.scope, p["ticket"], exit_price, profit)
-                    self.risk.register_closed_trade(profit + p.get("partial_realized", 0))
+                    profit -= float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
+                    state = self.risk.closed_state(profit + p.get("partial_realized", 0))
+                    if self.repository.settle_paper(p["key"], self.execution.scope, p["ticket"], exit_price, profit, reason=reason, risk_state=state):
+                        self.risk.state = state
+                    self.record_position_exit(p["symbol"], p["ticket"], reason)
                     self.persist_risk()
                     continue
-                decision = self.position_manager.decide(p["direction"], p["price"], current, p["sl"], p["initial_risk"], self.latest_atr(p["symbol"]), p.get("partial_done", False))
                 if decision.partial_close_fraction:
                     info = self.client.symbol_info(p["symbol"])
                     volume = self.risk._floor_step(p["volume"] * decision.partial_close_fraction, info.volume_step)
                     if volume >= info.volume_min and p["volume"] - volume >= info.volume_min - 1e-9:
-                        profit = self.client.order_calc_profit(0 if buy else 1, p["symbol"], volume, p["price"], current)
+                        slip = float(self.risk.policy(p["symbol"]).get("slippage_points",0))*info.point
+                        exit_price = current + (-slip if buy else slip)
+                        profit = self.client.order_calc_profit(0 if buy else 1, p["symbol"], volume, p["price"], exit_price)
                         if profit is None or not math.isfinite(profit):
                             raise ValueError("Paper partial-close calculation unavailable")
-                        profit -= float(self.cfg.get("trading.commission_per_lot", 0)) * volume
+                        profit -= float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * volume
                         p["risk"] *= (p["volume"] - volume) / p["volume"]
                         p["volume"] = round(p["volume"] - volume, 8)
                         p["partial_done"] = True
@@ -255,7 +435,7 @@ class TradingEngine:
                     p["sl"] = round(round(decision.new_sl / info.trade_tick_size) * info.trade_tick_size, int(info.digits))
                     self.repository.update_attempt(p.pop("key"), "PAPER_OPEN", p)
             return
-        if self.execution.mode != TradingMode.LIVE:
+        if self.execution.mode != TradingMode.LIVE or not self.execution.enable_live:
             return
         positions = self.client.positions_get()
         if positions is None:
@@ -265,12 +445,21 @@ class TradingEngine:
             meta = next((a for a in journal if a.get("position_ticket") == int(p.ticket) and a["magic"] == int(p.magic)), None)
             if meta is None or not self.feed.is_tick_fresh(p.symbol):
                 continue
-            if not p.sl:
-                self.execution.close_position(p, int(p.magic))
-                raise RuntimeError("Bot position without SL; emergency close attempted")
+            if not math.isfinite(float(p.sl)) or float(p.sl) <= 0:
+                self.record_position_exit(p.symbol, p.ticket, "Bot position without valid SL")
+                self.execution.manage_close(p, meta["key"], "Bot position without valid SL")
+                continue
             info, tick = self.client.symbol_info(p.symbol), self.client.symbol_info_tick(p.symbol)
             current = float(tick.bid if int(p.type) == 0 else tick.ask)
-            decision = self.position_manager.decide("BUY" if int(p.type) == 0 else "SELL", float(p.price_open), current, float(p.sl), meta["initial_risk"], self.latest_atr(p.symbol), meta.get("partial_state") is not None)
+            if meta.get("close_reason"):
+                self.execution.manage_close(p, meta["key"], meta["close_reason"])
+                continue
+            decision = self.position_decision(p.symbol, "BUY" if int(p.type) == 0 else "SELL",
+                float(p.price_open), current, float(p.sl), meta, frames)
+            if decision.close:
+                self.record_position_exit(p.symbol, p.ticket, decision.reason)
+                self.execution.manage_close(p, meta["key"], decision.reason)
+                continue
             if decision.partial_close_fraction:
                 volume = self.risk._floor_step(float(p.volume) * decision.partial_close_fraction, info.volume_step)
                 if volume >= info.volume_min and float(p.volume) - volume >= info.volume_min - 1e-9:
@@ -300,10 +489,6 @@ class TradingEngine:
             result = self.client.order_send({"action": 6, "position": int(p.ticket), "symbol": p.symbol, "sl": candidate, "tp": float(p.tp), "magic": int(p.magic)})
             logger.info("SL management ticket={} retcode={}", p.ticket, getattr(result, "retcode", None))
 
-    def latest_atr(self, symbol):
-        frame = self.frames_cache.get((symbol, "entry"))
-        return float(frame.atr.iloc[-1]) if frame is not None else None
-
     def paper_equity(self):
         equity = float(self.cfg.get("trading.paper_starting_balance", 10000)) + self.repository.get_state(self.execution.scope + ":paper_pnl", 0)
         for p in self.execution.paper_positions():
@@ -314,5 +499,5 @@ class TradingEngine:
             pnl = self.client.order_calc_profit(0 if p["direction"] == "BUY" else 1, p["symbol"], p["volume"], p["price"], price)
             if pnl is None or not math.isfinite(pnl):
                 raise ValueError("Paper mark-to-market unavailable")
-            equity += pnl - float(self.cfg.get("trading.commission_per_lot", 0)) * p["volume"]
+            equity += pnl - float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
         return equity

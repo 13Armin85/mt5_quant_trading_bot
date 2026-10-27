@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 from decimal import Decimal, ROUND_FLOOR
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from signals.trade_plan import net_reward_risk
@@ -18,23 +18,36 @@ class RiskState:
     week: str = ""
     peak_equity: float = 0.0
     trades_today: int = 0
+    status: str = "ACTIVE"
+    paused_at: str | None = None
+    resume_at: str | None = None
+    pause_reason: str | None = None
+    last_resume_at: str | None = None
+    last_resume_request: str | None = None
 
 
 class RiskManager:
-    def __init__(self, cfg: dict, client=None) -> None:
+    def __init__(self, cfg: dict, client=None, *, clock=None, mode="LIVE", symbols=None) -> None:
         self.cfg = cfg
         self.client = client
         self.state: RiskState | None = None
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.mode = getattr(mode, "value", mode)
+        self.symbols = symbols or {"symbols": {}}
+
+    def policy(self, symbol):
+        from core.symbol_policy import trading_policy
+        return trading_policy(symbol, self.cfg, self.symbols)
 
     def initialize_state(self, equity: float) -> None:
-        now = datetime.now(timezone.utc)
+        now = self.clock()
         self.state = RiskState(equity, equity, day=now.date().isoformat(), week=now.strftime("%G-%V"), peak_equity=equity)
 
     def roll_state(self, equity):
         self.risk_amount(equity)
         if self.state is None:
             self.initialize_state(equity)
-        now = datetime.now(timezone.utc)
+        now = self.clock()
         if self.state.day != now.date().isoformat():
             self.state.day = now.date().isoformat()
             self.state.day_start_equity = equity
@@ -43,6 +56,51 @@ class RiskManager:
             self.state.week = now.strftime("%G-%V")
             self.state.week_start_equity = equity
         self.state.peak_equity = max(equity, self.state.peak_equity)
+        if self.state.consecutive_losses >= int(self.cfg.get("max_consecutive_losses", 3)):
+            if self.state.status != "PAUSED":
+                self._pause(now)
+            if self.state.resume_at and now >= datetime.fromisoformat(self.state.resume_at):
+                self.state.status = "ACTIVE"
+                self.state.consecutive_losses = 0
+                self.state.last_resume_at = now.isoformat()
+                self.state.paused_at = self.state.resume_at = self.state.pause_reason = None
+
+    def _pause(self, now):
+        policy = self.cfg.get("loss_pause_resume", "manual")
+        if self.mode != "LIVE":
+            policy = self.cfg.get("paper_loss_pause_resume", policy)
+        self.state.status = "PAUSED"
+        self.state.paused_at = now.isoformat()
+        self.state.pause_reason = "Maximum consecutive losses reached"
+        if policy == "next_day":
+            self.state.resume_at = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        elif policy == "cooldown":
+            self.state.resume_at = (now + timedelta(seconds=float(self.cfg.get("loss_pause_seconds", 86400)))).isoformat()
+        else:
+            self.state.resume_at = None
+
+    def closed_state(self, profit):
+        """Prepare a new state for atomic journal + loss-counter settlement."""
+        preview = RiskManager(self.cfg, self.client, clock=self.clock, mode=self.mode, symbols=self.symbols)
+        preview.state = replace(self.state) if self.state else None
+        preview.register_closed_trade(profit)
+        return preview.state
+
+    def request_resume(self, request_id, equity, open_risk_fraction=0., kill_switch=False):
+        if self.state is None or self.state.last_resume_request == request_id:
+            return False,"Resume request already processed or risk state unavailable"
+        self.state.last_resume_request = request_id
+        if kill_switch:
+            return False,"Kill switch active"
+        original = replace(self.state)
+        self.state.status, self.state.consecutive_losses = "ACTIVE",0
+        allowed, reason = self.can_trade(equity,open_risk_fraction)
+        if not allowed:
+            self.state = original
+            return False,reason
+        self.state.last_resume_at = self.clock().isoformat()
+        self.state.paused_at = self.state.resume_at = self.state.pause_reason = None
+        return True,"Operator resume accepted; other risk limits remain active"
 
     def risk_amount(self, equity: float) -> float:
         if not math.isfinite(equity) or equity <= 0:
@@ -64,7 +122,8 @@ class RiskManager:
         side = getattr(direction, "value", direction) or ("BUY" if sl < entry else "SELL")
         if (side == "BUY" and sl >= entry) or (side == "SELL" and sl <= entry):
             raise ValueError("Stop loss is on the wrong side")
-        buffer = float(self.cfg.get("slippage_points", 0)) * float(info.point)
+        policy = self.policy(symbol)
+        buffer = float(policy.get("slippage_points", 0)) * float(info.point)
         stop = sl - buffer if side == "BUY" else sl + buffer
         if self.client is not None:
             pnl = self.client.order_calc_profit(0 if side == "BUY" else 1, symbol, 1.0, entry, stop)
@@ -73,7 +132,7 @@ class RiskManager:
             loss = -float(pnl)
         else:
             loss = self.theoretical_loss(entry, stop, 1, info)
-        loss += float(self.cfg.get("commission_per_lot", 0))
+        loss += float(policy.get("commission_per_lot", 0))
         if not math.isfinite(loss) or loss <= 0:
             raise ValueError("Invalid estimated loss")
         return loss
@@ -104,8 +163,9 @@ class RiskManager:
         else:
             value = float(info.trade_tick_value)/float(info.trade_tick_size)
             profit = lambda start,end:(1 if side=="BUY" else -1)*(end-start)*value
-        return net_reward_risk(side,entry,sl,tp,profit,float(self.cfg.get("commission_per_lot",0)),
-                               float(self.cfg.get("slippage_points",0))*float(info.point))
+        policy = self.policy(symbol)
+        return net_reward_risk(side,entry,sl,tp,profit,float(policy.get("commission_per_lot",0)),
+                               float(policy.get("slippage_points",0))*float(info.point))
 
     def theoretical_loss(self, entry: float, sl: float, volume: float, symbol_info) -> float:
         tick_size = float(getattr(symbol_info, "trade_tick_size", 0) or getattr(symbol_info, "point", 0))
@@ -158,14 +218,21 @@ class RiskManager:
             return False, "Daily loss limit reached"
         if self.weekly_locked(equity):
             return False, "Weekly loss limit reached"
-        if self.state and self.state.consecutive_losses >= int(self.cfg["max_consecutive_losses"]):
+        if self.state and self.state.status == "PAUSED":
             return False, "Maximum consecutive losses reached"
         if not math.isfinite(open_risk_fraction) or open_risk_fraction >= min(.01, float(self.cfg["max_total_risk"])):
             return False, "Maximum total open risk exceeded"
         return True, "OK"
 
     def register_closed_trade(self, profit: float) -> None:
+        if not math.isfinite(profit):
+            raise ValueError("Invalid closed-trade profit")
         if self.state is None:
             return
-        self.state.consecutive_losses = self.state.consecutive_losses + 1 if profit < 0 else 0
+        if profit < 0:
+            self.state.consecutive_losses += 1
+        elif profit > 0 and self.state.status != "PAUSED":
+            self.state.consecutive_losses = 0
+        if self.state.consecutive_losses >= int(self.cfg.get("max_consecutive_losses", 3)) and self.state.status != "PAUSED":
+            self._pause(self.clock())
         logger.info("Risk state updated losses={}", self.state.consecutive_losses)

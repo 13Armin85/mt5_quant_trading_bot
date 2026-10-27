@@ -1,5 +1,7 @@
 # MT5 Quant Trading Bot
 
+See [the updated Persian execution/research guide](IMPROVEMENTS_FA.md) and [the engineering audit with real broker data](RESEARCH_AUDIT_FA.md). Candidates are ranked across symbols before entry; directional portfolio factors are independent of news mappings. The chronological backtester reports mark-to-market equity and resolution limits. Research experiments remain on `baseline`.
+
 A modular Python 3.12+ trading framework for MetaTrader 5. The project is deliberately **PAPER-first**. A confidence score is not a guarantee of win rate or profit, and `LIVE` execution is blocked unless it is explicitly enabled.
 
 **Docker Desktop LIVE startup:** [راهنمای فارسی Docker](DOCKER_FA.md). On Windows, `Start-Live.cmd` starts the authenticated native MT5 bridge and the Linux `trader` service with `--mode live`. The bridge keeps the terminal password on the host; persistent SQLite history, single-writer leases and request deduplication survive container restarts. `Stop-Live.cmd` stops both components without closing broker positions. Docker Desktop and MT5 must be available; `ENABLE_LIVE_TRADING=true`, trading permissions, fresh quotes, news checks and a qualified signal are still required.
@@ -248,7 +250,7 @@ Set `broker_symbol: EURUSDm` under the logical symbol to select an exact instrum
 
 The current workspace scans six instruments on the connected LiteFinance account: `EURUSD_o`, `GBPUSD_o`, `USDJPY_o`, `XAUUSD_o`, `NQ` (logical `NAS100`, Nasdaq 100) and `YM` (logical `US30`, Dow Jones). `python main.py symbols` lists actual terminal instruments without submitting orders. `trading.mt5_time_zone: Europe/Helsinki` normalizes the server wall-clock timestamps observed on this connection, including seasonal UTC+2/UTC+3 changes. For APIs that already supply UTC, set this to `UTC`. Health output reports individual trading permissions, normalized tick times and tick age; stale/future tick protection remains enabled.
 
-Both US indices use the USD news filter and shared USD exposure limits. They do not inherit the forex weekly schedule; fresh broker quotes remain mandatory. Economic USD surprise rules do not imply a forex-style direction for an index. Use `python main.py analyze --symbol NAS100 --output reports/nas100_analysis.json` or `--symbol US30 --output reports/us30_analysis.json` for an individual report. Restart a running trading engine after editing `config/symbols.yaml`; Docker mounts this file directly, so a configuration-only change needs no image rebuild.
+Both US indices use the USD news filter and a shared us_equities risk factor, independent of the forex currency factors. They do not inherit the forex weekly schedule; fresh broker quotes remain mandatory. Economic USD surprise rules do not imply a forex-style direction for an index. Use `python main.py analyze --symbol NAS100 --output reports/nas100_analysis.json` or `--symbol US30 --output reports/us30_analysis.json` for an individual report. Restart a running trading engine after editing `config/symbols.yaml`; Docker mounts this file directly, so a configuration-only change needs no image rebuild.
 
 ## Important limitations
 
@@ -257,9 +259,9 @@ Both US indices use the USD news filter and shared USD exposure limits. They do 
 - Real volume and market depth depend on the broker and instrument; the system must not fabricate unavailable data.
 - The generic news provider requires a real external API URL/key.
 - The included backtester is bar-based and intentionally conservative; institutional-grade research should use higher-fidelity tick/Bid/Ask data.
-- Intrabar drawdown, historical swap and session-specific liquidity are not simulated. Ratios are unannualized per-trade statistics; realized drawdown includes initial capital.
+- Intrabar drawdown, historical swap and session-specific liquidity are not simulated. Ratios are unannualized per-trade statistics; the new chronological simulator reports bar-close mark-to-market drawdown and realized drawdown separately.
 - Conservative FOK/IOC selection, partial entry fills and emergency protection are implemented but require broker demo validation. A partial entry is never topped up. Unresolved protection/partial-close outcomes block entries for operator review.
-- Shared currency exposure is blocked conservatively. This is not an empirically fitted cross-asset correlation model.
+- Directional risk factors and aligned historical returns constrain concentration. Insufficient history uses explicit factor mapping; missing mapping blocks entries. This is not a fitted stress-correlation model.
 - Generic JSON calendar/headline adapters require real authorized endpoints. `news.provider: tradingeconomics` uses the official calendar API with `ECONOMIC_API_KEY`; subscription coverage/latency must be verified. Unknown medium-impact release effects suspend entries by default. Numeric surprise rules are explicit configuration assumptions; prose sentiment cannot send orders or alter risk.
 - Account changes during execution invalidate the connection. Do not delete the database/journal while positions or unresolved attempts exist. An alternate database, machine or copied project bypasses the local instance lock and must not run against the same account/magic concurrently.
 - The 1% cap is planned risk. Gaps, actual slippage and broker execution can cause larger losses.

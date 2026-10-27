@@ -64,3 +64,11 @@ def test_unpublished_release_never_gets_directional_bias():
     now=datetime.now(timezone.utc)
     event=NewsEvent(now+timedelta(minutes=1),"USD","HIGH","Interest rate","5%","4%")
     assert analyze_release(event,[{"contains":"interest","higher_is_positive":True}],now)["currency_bias"] is None
+
+
+def test_research_plans_honor_historical_tick_size():
+    data=bars(250)
+    proposals=generate_signals(data,cfg(),1,"trend_pullback",costs={"tick_size":.01})
+    assert len(proposals)>0
+    for column in ("sl","tp"):
+        assert np.allclose(proposals[column]/.01,np.round(proposals[column]/.01))

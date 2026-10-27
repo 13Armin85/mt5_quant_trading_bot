@@ -19,7 +19,33 @@ EXTRA_COLUMNS = {
 }
 
 
-def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=.5):
+def breakout_retest(frame, lookback, expiry=6, tolerance_atr=.2):
+    """Replay a bounded closed-bar setup; first retest only, with expiry/invalidation."""
+    last = len(frame)-1
+    for origin in range(last-1,max(lookback-1,last-expiry-1),-1):
+        trigger = frame.iloc[origin]
+        prior = frame.iloc[origin-lookback:origin]
+        side = 1 if trigger.close>prior.high.max() else -1 if trigger.close<prior.low.min() else 0
+        if not side:
+            continue
+        level = float(prior.high.max() if side==1 else prior.low.min())
+        buffer = float(trigger.atr)*tolerance_atr
+        for index in range(origin+1,last+1):
+            row = frame.iloc[index]
+            if side*(row.close-level)<-buffer:
+                break
+            touched = row.low<=level+buffer if side==1 else row.high>=level-buffer
+            confirmed = side*(row.close-level)>0 and side*(row.close-row.open)>0
+            if touched and confirmed:
+                if index==last:
+                    return Direction.BUY if side==1 else Direction.SELL, f"Retest confirmed; origin={trigger.time}; level={level}"
+                return Direction.HOLD,"Breakout retest already consumed on a prior closed bar"
+        # The latest breakout defines the current state; older levels are superseded.
+        return Direction.HOLD,"Retest waiting, expired or invalidated"
+    return Direction.HOLD,"No unexpired breakout to retest"
+
+
+def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=.5, options=None):
     """Closed-bar rules. Stops/targets are ATR based in SignalEngine.
 
     Auto selects a regime rule, never claims an empirically optimal strategy.
@@ -47,6 +73,11 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
         return Direction.HOLD, family, "Trend entry requires a trending/breakout market"
     bullish = macro.ema_20 > macro.ema_50 > macro.ema_200 and trend.ema_20 > trend.ema_50 > trend.ema_200
     bearish = macro.ema_20 < macro.ema_50 < macro.ema_200 and trend.ema_20 < trend.ema_50 < trend.ema_200
+    options = options or {}
+    experiment = options.get("experiment","baseline")
+    if experiment=="h1_context" and family=="trend_pullback":
+        bullish = trend.ema_20 > trend.ema_50 > trend.ema_200 and setup.ema_20>setup.ema_50
+        bearish = trend.ema_20 < trend.ema_50 < trend.ema_200 and setup.ema_20<setup.ema_50
     buy = sell = False
     if family == "trend_pullback":
         buy = bullish and previous.low <= previous.ema_20 + previous.atr * pullback_atr and x.close > x.ema_20 and x.close > previous.close
@@ -55,7 +86,12 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
         if len(frames["entry"])<lookback+1:
             return Direction.HOLD, family, "Insufficient breakout lookback"
         prior = frames["entry"].iloc[-lookback-1:-1]
-        healthy = .0005 <= x.atr / x.close <= .02 and x.relative_volume >= .85
+        healthy = float(options.get("min_atr_fraction",.0005)) <= x.atr / x.close <= float(options.get("max_atr_fraction",.02)) and x.relative_volume >= float(options.get("min_relative_volume",.85))
+        if experiment=="breakout_retest":
+            direction, reason = breakout_retest(frames["entry"],lookback,int(options.get("retest_expiry_bars",6)),float(options.get("retest_tolerance_atr",.2)))
+            if not healthy or (direction==Direction.BUY and bearish) or (direction==Direction.SELL and bullish):
+                return Direction.HOLD,family,"Retest cost/volatility/direction filter blocked entry"
+            return direction,family,reason
         buy = healthy and not bearish and x.close > prior.high.max() and x.close > x.open
         sell = healthy and not bullish and x.close < prior.low.min() and x.close < x.open
     elif family == "mean_reversion":
@@ -84,7 +120,7 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
         buy = previous.cci < -100 and x.cci >= -100 and x.close > previous.close
         sell = previous.cci > 100 and x.cci <= 100 and x.close < previous.close
     elif family == "keltner_breakout":
-        healthy = .0005 <= x.atr / x.close <= .02 and x.relative_volume >= .85
+        healthy = float(options.get("min_atr_fraction",.0005)) <= x.atr / x.close <= float(options.get("max_atr_fraction",.02)) and x.relative_volume >= float(options.get("min_relative_volume",.85))
         buy = healthy and not bearish and previous.close <= previous.keltner_high and x.close > x.keltner_high and x.close > x.open
         sell = healthy and not bullish and previous.close >= previous.keltner_low and x.close < x.keltner_low and x.close < x.open
     elif family == "vwap_reclaim":

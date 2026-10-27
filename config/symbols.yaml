@@ -17,6 +17,7 @@ symbols:
     aliases: [USDJPY, USDJPYm, USDJPY.a]
     currencies: [USD, JPY]
   XAUUSD:
+    risk_factors: {gold: 1}
     broker_symbol: XAUUSD_o
     quote_schedule:
       type: weekend_only # Daily metals sessions must be checked separately; no exact reopening is inferred.
@@ -25,12 +26,14 @@ symbols:
     currencies: [XAU, USD]
     extra_news_currencies: [USD]
   NAS100:
+    risk_factors: {us_equities: 1}
     broker_symbol: NQ
     # Index sessions differ from forex; require fresh broker ticks without inferring opening times.
     aliases: [NAS100, NQ, US100, NASDAQ100]
     # US economic news affects the index; this is not a two-currency FX pair.
     currencies: [USD]
   US30:
+    risk_factors: {us_equities: 1}
     broker_symbol: YM
     aliases: [US30, YM, DJ30, DJIA]
     currencies: [USD]

@@ -16,6 +16,9 @@ trading:
   max_daily_loss: 0.03
   max_weekly_loss: 0.06
   max_consecutive_losses: 3
+  loss_pause_resume: manual # LIVE keeps its existing lock until operator review.
+  paper_loss_pause_resume: next_day # Explicit UTC next-day resume; other limits still apply.
+  loss_pause_seconds: 86400 # Used only by the optional cooldown policy.
   min_confidence: 0.70
   min_rr: 1.5
   preferred_rr: 2.0 # Legacy setting; adaptive net targets below define new plans.
@@ -28,6 +31,8 @@ trading:
   paper_starting_balance: 10000
   correlation_threshold: 0.80
   max_correlated_positions: 1
+  correlation_minimum_history: 60
+  correlation_lookback: 250
 
 news:
   enabled: true
@@ -65,6 +70,10 @@ news:
   surprise_rules: [] # Optional explicit interpretation: {contains: ..., higher_is_positive: true/false}
 
 strategy:
+  experiment: baseline # Research only: h1_context, breakout_retest, range_midpoint.
+  retest:
+    retest_expiry_bars: 6
+    retest_tolerance_atr: 0.2
   family: ensemble # Compare all enabled rules on each completed candle. Explicit family selects that rule only.
   enabled_strategies: [trend_pullback, breakout, mean_reversion, momentum, ema_cross, macd_cross, ichimoku, supertrend, stochastic_reversal, cci_reversion, keltner_breakout, vwap_reclaim]
   selection:
@@ -132,11 +141,20 @@ strategy:
     ichimoku_span: 52
     supertrend_multiple: 3
   filters:
+    min_atr_fraction: 0.0005
+    max_atr_fraction: 0.02
+    high_volatility_fraction: 0.04
+    compression_quantile: 0.2
     max_spread_multiplier: 2.0
     min_adx_trending: 22
     min_relative_volume: 0.85
 
 position_management:
+  loss_cut_enabled: true
+  max_adverse_r: 0.75 # Price loss / original stop distance; execution costs and gaps can increase realized loss.
+  invalidation_exit_enabled: true
+  invalidation_confirmation_bars: 2 # Consecutive completed entry bars starting after the position opened.
+  defensive_exit_cooldown_seconds: 900
   break_even_enabled: true
   break_even_trigger_r: 1.0
   trailing_enabled: true

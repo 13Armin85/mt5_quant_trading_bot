@@ -36,7 +36,7 @@ def build_runtime(mode=None):
         raise ValueError("LIVE blocked: set ENABLE_LIVE_TRADING=true explicitly")
     client=create_mt5_client(cfg, trading=selected == TradingMode.LIVE); client.initialize()
     feed=DataFeed(client,int(cfg.get("trading.max_tick_age_seconds",15)),cfg.symbols)
-    risk=RiskManager(cfg.get("trading",{}),client)
+    risk=RiskManager(cfg.get("trading",{}),client,mode=selected,symbols=cfg.symbols)
     repo=Repository(cfg.env.database_url)
     account = client.account_info()
     identity = hashlib.sha256(f"{account.server}:{account.login}".encode()).hexdigest()[:16]
@@ -52,6 +52,12 @@ def main():
     run = commands.add_parser("run")
     run.add_argument("--mode", choices=["paper", "live"])
     commands.add_parser("health")
+    funnel = commands.add_parser("funnel", help="Read stored unique setup/rejection counts without MT5")
+    funnel.add_argument("--scope")
+    funnel.add_argument("--output", default="reports/funnel.json")
+    resume = commands.add_parser("resume-risk",help="Queue a reviewed loss-pause resume for the running engine; never sends orders directly")
+    resume.add_argument("--scope",required=True,help="Exact account/mode scope shown in heartbeat")
+    resume.add_argument("--reason",required=True,help="Operator explanation, stored in the journal")
     news = commands.add_parser("news", help="Read-only news connection check; no MT5 or orders")
     news.add_argument("--symbol", default="XAUUSD")
     news.add_argument("--output", default="reports/news_status.json")
@@ -70,15 +76,41 @@ def main():
     backtest.add_argument("--signals")
     backtest.add_argument("--contract-value", type=float)
     backtest.add_argument("--compare", action="store_true")
+    backtest.add_argument("--compare-experiments",action="store_true",help="Compare three fixed research hypotheses against their baseline")
+    backtest.add_argument("--experiment",default="baseline",choices=["baseline","h1_context","breakout_retest","range_midpoint"])
     backtest.add_argument("--family", default="ensemble", choices=["auto", "ensemble", *FAMILIES])
-    backtest.add_argument("--spread", type=float, default=0)
-    backtest.add_argument("--slippage", type=float, default=0)
-    backtest.add_argument("--commission", type=float, default=7)
+    backtest.add_argument("--spread", type=float, default=0, help="Bid/Ask spread in PRICE units, not points/pips")
+    backtest.add_argument("--slippage", type=float, default=0, help="Adverse slippage per fill in PRICE units")
+    backtest.add_argument("--commission", type=float, default=7, help="Round-trip account currency per lot")
+    backtest.add_argument("--tick-size", type=float, help="Historical price tick size; must be verified independently")
+    backtest.add_argument("--symbol-costs",help="JSON keyed by symbol: spread/slippage in price, commission/lot, volume_step/min/max, tick_size")
     backtest.add_argument("--volume-step", type=float, default=.01)
     backtest.add_argument("--min-volume", type=float, default=.01)
     backtest.add_argument("--max-volume", type=float, default=100)
     backtest.add_argument("--output", default="reports/backtest.json")
     args=parser.parse_args()
+    if args.command == "resume-risk":
+        import uuid
+        if not args.reason.strip():
+            parser.error("--reason must explain the operator review")
+        cfg = load_config()
+        repo = Repository(cfg.env.database_url)
+        if repo.get_state(args.scope + ":risk") is None:
+            parser.error("Unknown scope; use the heartbeat scope for the intended account")
+        request = {"id":uuid.uuid4().hex,"reason":args.reason,"time":datetime.now(timezone.utc).isoformat()}
+        repo.set_state(args.scope + ":resume_request",request)
+        print(json.dumps({"status":"queued","scope":args.scope,"request_id":request["id"],
+            "note":"Engine rechecks kill switch, equity, daily/weekly/drawdown and risk caps; see resume_result"}))
+        return
+    if args.command == "funnel":
+        from backtest.report import save_report
+        repo = Repository(load_config().env.database_url)
+        report = {"counts":repo.decision_funnel(args.scope),
+            "observed_waits":{k:v for k,v in repo.states(args.scope+":" if args.scope else "").items() if ":wait:" in k},
+            "basis":"Distinct setup/config/candle per stage and reason; repeated polls do not add counts",
+            "note":"A setup may pass through multiple stages/reasons; counts must not be summed as trades"}
+        print(save_report(report,args.output))
+        return
     if args.command == "news":
         from dataclasses import asdict
         from backtest.report import save_report
@@ -130,27 +162,40 @@ def main():
     if args.command == "backtest":
         import pandas as pd
         from backtest.engine import BacktestEngine
-        from backtest.research import generate_signals, compare_strategies
+        from backtest.research import generate_signals, compare_strategies, compare_experiments
         from backtest.report import save_report
+        if args.compare and args.compare_experiments:
+            parser.error("Choose either --compare or --compare-experiments")
         cfg = load_config(); cfg.validate_runtime()
+        cfg = cfg.model_copy(deep=True)
+        cfg.settings["strategy"]["experiment"] = args.experiment
         bars = pd.read_csv(args.bars)
         bars["time"] = pd.to_datetime(bars.time, utc=True)
         kwargs = dict(spread=args.spread, slippage=args.slippage, commission_per_lot=args.commission,
                       volume_step=args.volume_step, volume_min=args.min_volume, volume_max=args.max_volume,
+                      tick_size=args.tick_size,max_total_risk=float(cfg.get("trading.max_total_risk",.01)),
+                      max_positions=int(cfg.get("trading.max_positions",3)),max_trades_per_day=int(cfg.get("trading.max_trades_per_day",10)),
+                      risk_limits=cfg.get("trading",{}),position_management=cfg.get("position_management",{}),
+                      symbols=cfg.symbols,
                       risk_fraction=float(cfg.get("trading.risk_per_trade",.005)),minimum_net_rr=max(float(cfg.get("trading.min_rr",1.5)),float(cfg.get("strategy.reward_risk.minimum_net_rr",1.5))))
+        if args.symbol_costs:
+            kwargs["symbol_costs"] = json.loads(Path(args.symbol_costs).read_text(encoding="utf-8"))
         if not args.signals and (args.contract_value is None or args.contract_value <= 0):
             parser.error("--contract-value is required without --signals; use broker account-currency value per one price unit/lot")
-        if args.compare:
+        if args.compare or args.compare_experiments:
             if args.contract_value is None or args.contract_value <= 0:
                 parser.error("--compare requires --contract-value")
-            report = compare_strategies(bars, cfg, args.contract_value, kwargs)
+            report = (compare_experiments if args.compare_experiments else compare_strategies)(bars, cfg, args.contract_value, kwargs)
         else:
             signals = pd.read_csv(args.signals) if args.signals else generate_signals(bars, cfg, args.contract_value, args.family,costs=kwargs)
             test = BacktestEngine(**kwargs)
             trades, metrics = test.run(bars, signals)
             report = {"metrics": metrics, "rejections": test.rejections, "news_validated": False, "costs": kwargs}
+            from backtest.provenance import manifest
+            report["manifest"] = manifest(bars,cfg,kwargs)
             Path(args.output).parent.mkdir(parents=True, exist_ok=True)
             trades.to_csv(Path(args.output).with_suffix(".trades.csv"), index=False)
+            test.equity_curve.to_csv(Path(args.output).with_suffix(".equity.csv"),index=False)
         print(save_report(report, args.output))
         return
     if args.command == "run":

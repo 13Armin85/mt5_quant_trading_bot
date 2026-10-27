@@ -3,6 +3,10 @@ from __future__ import annotations
 
 def validate_for_live(cfg, client, feed, symbols: list[str], backtest_metrics: dict | None = None, model_valid: bool = True, news_valid: bool = True) -> tuple[bool,list[str]]:
     reasons=[]
+    if not backtest_metrics:
+        reasons.append("No out-of-sample research evidence supplied")
+    elif backtest_metrics.get("cost_status") != "verified" or not backtest_metrics.get("news_validated",False):
+        reasons.append("Historical costs/news are unverified; operational permission is separate from research readiness")
     if not cfg.env.enable_live_trading: reasons.append("ENABLE_LIVE_TRADING=false")
     if not client.health_check(): reasons.append("MT5 connection unhealthy")
     for s in symbols:
