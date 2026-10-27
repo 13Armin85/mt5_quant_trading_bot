@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 
-def calculate_metrics(trades: pd.DataFrame, initial_equity: float = 10000.0) -> dict:
+def calculate_metrics(trades: pd.DataFrame, initial_equity: float = 10000.0, equity_curve=None) -> dict:
     if not math.isfinite(initial_equity) or initial_equity <= 0:
         raise ValueError("initial_equity must be positive")
     if trades.empty:
@@ -35,7 +35,7 @@ def calculate_metrics(trades: pd.DataFrame, initial_equity: float = 10000.0) -> 
         elif x < 0: streak_l += 1; streak_w = 0; max_l = max(max_l, streak_l)
     calmar = (net/initial_equity)/max_dd if max_dd > 0 else 0.0
     recovery = net/(max_dd*initial_equity) if max_dd > 0 else 0.0
-    return {
+    result = {
         "total_trades": int(len(pnl)), "winning_trades": int((pnl>0).sum()), "losing_trades": int((pnl<0).sum()),
         "win_rate": float((pnl>0).mean()), "profit_factor": pf, "expectancy": expectancy, "net_profit": net,
         "net_return": net / initial_equity, "payoff_ratio": float(wins.mean() / abs(losses.mean())) if len(wins) and len(losses) else None,
@@ -48,3 +48,33 @@ def calculate_metrics(trades: pd.DataFrame, initial_equity: float = 10000.0) -> 
         "average_holding_time": str((pd.to_datetime(trades.exit_time)-pd.to_datetime(trades.entry_time)).mean()) if {"entry_time","exit_time"}.issubset(trades.columns) else None,
         "exposure": float(trades.get("exposure", pd.Series([0.0])).mean()), "monthly_return": {str(k): float(v/initial_equity) for k,v in monthly.items()},
     }
+    result["realized_max_drawdown"] = max_dd
+    result["net_expectancy_r"] = result["average_r"]
+    if equity_curve is not None and not equity_curve.empty:
+        marked = equity_curve.equity.astype(float)
+        peaks = marked.cummax().clip(lower=initial_equity)
+        drawdown = (peaks-marked)/peaks
+        result["max_drawdown"] = float(drawdown.max())
+        result["relative_drawdown"] = result["max_drawdown"]
+        result["drawdown_basis"] = "Bar-close mark-to-market with liquidation spread, slippage and remaining commission"
+        times = pd.to_datetime(equity_curve.time,utc=True)
+        start, longest = None, pd.Timedelta(0)
+        for time, underwater in zip(times,drawdown>0):
+            if underwater and start is None:
+                start = time
+            if start is not None:
+                longest = max(longest,time-start)
+            if not underwater:
+                start = None
+        result["maximum_drawdown_duration"] = str(longest)
+        # Sharpe/Sortino above remain explicitly per-trade and unannualized.
+        result["calmar_ratio"] = None
+        result["recovery_factor"] = net/(result["max_drawdown"]*initial_equity) if result["max_drawdown"] else 0.
+    result["breakdowns"] = {}
+    for column in ("symbol", "strategy", "regime", "session", "direction"):
+        if column in trades:
+            result["breakdowns"][column] = {str(name): {"trades":int(len(group)),
+                "net_profit":float(group.profit.sum()),"expectancy":float(group.profit.mean()),
+                "expectancy_r":float(group.r.mean()) if "r" in group else None}
+                for name,group in trades.groupby(column)}
+    return result

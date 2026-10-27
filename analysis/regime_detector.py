@@ -11,15 +11,15 @@ def detect_regime(df, filters: dict | None = None) -> MarketRegime:
         return MarketRegime.UNCERTAIN
     adx_min = float(filters.get("min_adx_trending", 22))
     atr_pct = float(x.atr / x.close) if x.close else 0.0
-    if atr_pct > 0.04:
+    if atr_pct > float(filters.get("high_volatility_fraction",.04)):
         return MarketRegime.HIGH_VOLATILITY
     lookback = int(filters.get("breakout_lookback",20))
-    if len(df)>lookback and .0005<=atr_pct<=.02:
+    if len(df)>lookback and float(filters.get("min_atr_fraction",.0005))<=atr_pct<=float(filters.get("max_atr_fraction",.02)):
         prior = df.iloc[-lookback-1:-1]
         relative_volume = float(x.get("relative_volume",0))
         if relative_volume >= float(filters.get("min_relative_volume",.85)) and (x.close > prior.high.max() or x.close < prior.low.min()):
             return MarketRegime.BREAKOUT
-    if x.bb_width < df.bb_width.tail(100).quantile(0.2):
+    if x.bb_width < df.bb_width.iloc[:-1].tail(100).quantile(float(filters.get("compression_quantile",.2))):
         return MarketRegime.LOW_VOLATILITY
     if x.adx >= adx_min and x.ema_20 > x.ema_50 > x.ema_200:
         return MarketRegime.TRENDING_BULLISH

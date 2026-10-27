@@ -14,6 +14,6 @@ SESSIONS={
 def active_sessions(now_utc: datetime) -> list[str]:
     active=[]
     for name,(tz,start,end) in SESSIONS.items():
-        local=now_utc.astimezone(ZoneInfo(tz)).time()
-        if start<=local<end: active.append(name)
+        local=now_utc.astimezone(ZoneInfo(tz))
+        if local.weekday()<5 and start<=local.time()<end: active.append(name)
     return active

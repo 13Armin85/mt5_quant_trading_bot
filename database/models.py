@@ -61,3 +61,17 @@ class RuntimeState(Base):
     __tablename__ = "runtime_state"
     key: Mapped[str] = mapped_column(String(160), primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
+
+
+class DecisionRecord(Base):
+    __tablename__ = "decisions"
+    key: Mapped[str] = mapped_column(String(240), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(80), index=True)
+    evaluation_id: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy: Mapped[str] = mapped_column(String(64))
+    regime: Mapped[str] = mapped_column(String(64))
+    session: Mapped[str] = mapped_column(String(100))
+    stage: Mapped[str] = mapped_column(String(32))
+    reason_code: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[str] = mapped_column(Text)

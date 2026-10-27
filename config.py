@@ -77,12 +77,47 @@ class AppConfig(BaseModel):
         if not self.symbols.get("symbols"):
             raise ValueError("Configure at least one symbol")
         for logical,meta in self.symbols["symbols"].items():
+            from core.symbol_policy import ALLOWED_COSTS
+            costs = meta.get("costs", {})
+            if not isinstance(costs, dict) or set(costs) - ALLOWED_COSTS:
+                raise ValueError(f"Unsupported symbol costs for {logical}")
+            for key, value in costs.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 or (key == "max_spread_points" and value == 0):
+                    raise ValueError(f"Invalid {logical}.costs.{key}; use broker points or round-trip account currency/lot")
+                if key == "max_deviation_points" and int(value) != value:
+                    raise ValueError("max_deviation_points must be an integer")
+            factors = meta.get("risk_factors", {})
+            if not isinstance(factors, dict) or any(not isinstance(k,str) or not k or isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v == 0 for k,v in factors.items()):
+                raise ValueError(f"Invalid portfolio risk_factors for {logical}")
             schedule = meta.get("quote_schedule")
             if schedule:
-                if schedule.get("type") not in {"litefinance_forex","weekend_only"}:
-                    raise ValueError(f"Unsupported quote_schedule for {logical}")
-                ZoneInfo(schedule["timezone"])
+                from core.market_hours import validate_schedule
+                validate_schedule(schedule)
         from signals.strategies import FAMILIES
+        if self.get("strategy.experiment","baseline") not in {"baseline","h1_context","breakout_retest","range_midpoint"}:
+            raise ValueError("Unsupported strategy.experiment")
+        low = float(self.get("strategy.filters.min_atr_fraction",.0005))
+        high = float(self.get("strategy.filters.max_atr_fraction",.02))
+        extreme = float(self.get("strategy.filters.high_volatility_fraction",.04))
+        quantile = float(self.get("strategy.filters.compression_quantile",.2))
+        if not all(math.isfinite(v) for v in (low,high,extreme,quantile)) or not 0<low<high<extreme or not 0<quantile<1:
+            raise ValueError("Invalid ATR fractions/compression quantile")
+        expiry = self.get("strategy.retest.retest_expiry_bars",6)
+        tolerance = float(self.get("strategy.retest.retest_tolerance_atr",.2))
+        if isinstance(expiry,bool) or int(expiry)!=expiry or not 1<=expiry<=20 or not math.isfinite(tolerance) or not 0<tolerance<=1:
+            raise ValueError("Invalid retest expiry/tolerance")
+        for key in ("loss_pause_resume", "paper_loss_pause_resume"):
+            if self.get("trading." + key, "manual") not in {"manual", "next_day", "cooldown"}:
+                raise ValueError("Invalid loss-pause resume policy")
+        pause = float(self.get("trading.loss_pause_seconds", 86400))
+        if not math.isfinite(pause) or pause < 60:
+            raise ValueError("loss_pause_seconds must be finite and >= 60")
+        minimum = int(self.get("trading.correlation_minimum_history", 60))
+        if minimum < 20 or int(self.get("trading.correlation_lookback",250)) < minimum:
+            raise ValueError("Correlation needs at least 20 aligned returns within lookback")
+        threshold = float(self.get("trading.correlation_threshold",.8))
+        if not math.isfinite(threshold) or not 0 < threshold <= 1 or int(self.get("trading.max_correlated_positions",1)) < 1:
+            raise ValueError("Invalid correlation limits")
         if self.get("strategy.family", "ensemble") not in (*FAMILIES, "auto", "ensemble"):
             raise ValueError("Unsupported strategy.family")
         enabled = self.get("strategy.enabled_strategies", list(FAMILIES))
@@ -130,6 +165,15 @@ class AppConfig(BaseModel):
         fraction = float(self.get("position_management.partial_close_fraction", .5))
         if not math.isfinite(fraction) or not 0 < fraction < 1:
             raise ValueError("partial_close_fraction must be between 0 and 1")
+        adverse = float(self.get("position_management.max_adverse_r", .75))
+        if not math.isfinite(adverse) or not 0 < adverse <= 1:
+            raise ValueError("position_management.max_adverse_r must be > 0 and <= 1")
+        confirmations = self.get("position_management.invalidation_confirmation_bars", 2)
+        if isinstance(confirmations, bool) or int(confirmations) != confirmations or not 2 <= int(confirmations) <= 10:
+            raise ValueError("position_management.invalidation_confirmation_bars must be an integer from 2 to 10")
+        cooldown = float(self.get("position_management.defensive_exit_cooldown_seconds", 900))
+        if not math.isfinite(cooldown) or cooldown < 0:
+            raise ValueError("position_management.defensive_exit_cooldown_seconds must be nonnegative")
         for key, default in (("max_daily_loss", .03), ("max_weekly_loss", .06), ("max_drawdown", .10), ("min_confidence", .70)):
             value = float(self.get(f"trading.{key}", default))
             if not math.isfinite(value) or not 0 < value <= 1:

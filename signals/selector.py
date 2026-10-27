@@ -79,7 +79,9 @@ def assess_strategies(frames, regime, cfg, structure):
             results.append(Assessment(family, GROUPS[family], Direction.HOLD, 0, False, ["Disabled by configuration"]))
             continue
         direction, _, reason = strategy_direction(frames, regime, family,
-            int(cfg.get("strategy.breakout_lookback",20)),float(cfg.get("strategy.pullback_atr",.5)))
+            int(cfg.get("strategy.breakout_lookback",20)),float(cfg.get("strategy.pullback_atr",.5)),
+            {**cfg.get("strategy.filters",{}),"experiment":cfg.get("strategy.experiment","baseline"),
+             **cfg.get("strategy.retest",{})})
         if direction == Direction.HOLD:
             results.append(Assessment(family, GROUPS[family], direction, 0, False, [reason]))
             continue
@@ -103,8 +105,9 @@ def assess_strategies(frames, regime, cfg, structure):
         fit = .9 if reversion and regime==MarketRegime.RANGING else .85 if not reversion and regime!=MarketRegime.RANGING else .5
         if adx is not None:
             fit = (fit + (max(0,min(1,1-adx/40)) if reversion else max(0,min(1,adx/35))))/2
+        lower, upper = float(cfg.get("strategy.filters.min_atr_fraction",.0005)),float(cfg.get("strategy.filters.max_atr_fraction",.02))
         components = {"regime_fit":fit,"higher_timeframes":mean(aligned),"oscillators":_oscillator_support(x,direction,reversion),
-                      "volume":vol,"price_confirmation":.5+.5*price,"volatility":1 if .0005<=atr_pct<=.02 else .3,"entry_trigger":1.0}
+                      "volume":vol,"price_confirmation":.5+.5*price,"volatility":1 if lower<=atr_pct<=upper else .3,"entry_trigger":1.0}
         weights = cfg.get("strategy.selection.component_weights") or {"regime_fit":.25,"higher_timeframes":.20,"oscillators":.15,
                     "volume":.10,"price_confirmation":.10,"volatility":.10,"entry_trigger":.10}
         weight_sum = sum(weights.values())

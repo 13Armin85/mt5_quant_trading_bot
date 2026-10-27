@@ -104,6 +104,41 @@ def test_order_check_reject_does_not_send(live_engine, broker):
     assert not live_engine.execute(request()).success and not broker.sent
 
 
+def test_unsent_order_check_rejection_can_retry_after_restart(live_engine,broker):
+    broker.check_code=10019
+    assert not live_engine.execute(request()).success and not broker.sent
+    broker.check_code=0
+    restarted=ExecutionEngine(broker,TradingMode.LIVE,True,str(live_engine.kill_switch_path),
+        live_engine.risk,live_engine.repo,live_engine.cfg,live_engine.scope)
+    assert restarted.execute(request()).success
+    assert len(broker.sent)==1
+
+
+def test_actual_rejected_send_retains_permanent_claim(live_engine,broker):
+    broker.code=10018
+    assert not live_engine.execute(request()).success
+    broker.code=10009
+    assert not live_engine.execute(request()).success
+    assert len(broker.sent)==1
+
+
+def test_ambiguous_emergency_close_is_not_resent(live_engine,broker,monkeypatch):
+    broker.missing_sl=True
+    send=broker.order_send
+    def uncertain(req):
+        if "position" in req:
+            broker.sent.append(req.copy())
+            return None
+        return send(req)
+    monkeypatch.setattr(broker,"order_send",uncertain)
+    assert live_engine.execute(request()).status=="PROTECTION_FAILURE"
+    live_engine.reconcile()
+    live_engine.reconcile()
+    assert len(broker.sent)==2
+    attempt=live_engine.repo.attempts(live_engine.scope)[0]
+    assert json.loads(attempt.payload)["close_state"]=="UNKNOWN"
+
+
 def test_final_equity_resizes_order(live_engine, broker):
     broker.account.equity = 1000
     result = live_engine.execute(request())

@@ -52,9 +52,10 @@ class ExecutionEngine:
         return True, "OK"
 
     def _prepare(self, req):
+        policy = self.risk.policy(req.symbol)
         if not self.client.health_check():
             raise ValueError("MT5 connection unhealthy")
-        if not DataFeed(self.client, int(self.cfg.get("max_tick_age_seconds", 15))).is_tick_fresh(req.symbol):
+        if not DataFeed(self.client, int(self.cfg.get("max_tick_age_seconds", 15)),self.risk.symbols).is_tick_fresh(req.symbol):
             raise ValueError("Stale or invalid tick")
         info, tick, account = self.client.symbol_info(req.symbol), self.client.symbol_info_tick(req.symbol), self.client.account_info()
         if info is None or account is None:
@@ -68,11 +69,11 @@ class ExecutionEngine:
             raise ValueError("Symbol does not permit this entry")
         if not math.isfinite(info.point) or info.point <= 0 or not math.isfinite(info.trade_tick_size) or info.trade_tick_size <= 0:
             raise ValueError("Invalid broker point/tick size")
-        if (tick.ask - tick.bid) / info.point > float(self.cfg.get("max_spread_points", 40)):
+        if (tick.ask - tick.bid) / info.point > float(policy.get("max_spread_points", 40)):
             raise ValueError("Spread exceeds limit")
         req.price = float(tick.ask if req.direction == Direction.BUY else tick.bid)
         if self.mode == TradingMode.PAPER:
-            req.price += (1 if req.direction == Direction.BUY else -1) * float(self.cfg.get("slippage_points", 0)) * info.point
+            req.price += (1 if req.direction == Direction.BUY else -1) * float(policy.get("slippage_points", 0)) * info.point
         unit = float(info.trade_tick_size)
         req.sl = round(round(req.sl / unit) * unit, int(info.digits))
         req.tp = round(round(req.tp / unit) * unit, int(info.digits))
@@ -83,12 +84,15 @@ class ExecutionEngine:
         minimum = max(int(info.trade_stops_level), int(info.trade_freeze_level)) * info.point
         if min(abs(liquidation - req.sl), abs(liquidation - req.tp)) < minimum or not (req.sl < liquidation < req.tp if req.direction == Direction.BUY else req.tp < liquidation < req.sl):
             raise ValueError("Broker stops/freeze distance violated")
-        entry_buffer = float(self.cfg.get("slippage_points",0))*float(info.point) if self.mode==TradingMode.LIVE else 0
+        entry_buffer = float(policy.get("slippage_points",0))*float(info.point) if self.mode==TradingMode.LIVE else 0
         worst_entry = req.price + (1 if req.direction==Direction.BUY else -1)*entry_buffer
         economics = self.risk.reward_risk(req.symbol,req.direction,worst_entry,req.sl,req.tp,info)
         if economics["net_rr"]+1e-8<max(float(self.cfg.get("min_rr",1.5)),req.minimum_net_rr or 0):
             raise ValueError("Final net reward/risk below minimum after costs and current quote")
         exposure, positions, orders = self.risk.account_exposure()
+        simulated = self.paper_positions() if self.mode == TradingMode.PAPER else []
+        if hasattr(self, "portfolio_check"):
+            self.portfolio_check(req, positions, orders, simulated)
         if len(positions) + len(orders) >= int(self.cfg.get("max_positions", 3)):
             raise ValueError("Maximum positions reached")
         if any(p.symbol == req.symbol for p in [*positions, *orders]):
@@ -109,7 +113,7 @@ class ExecutionEngine:
                 pnl = self.client.order_calc_profit(0 if p["direction"] == "BUY" else 1, p["symbol"], p["volume"], p["price"], mark)
                 if pnl is None:
                     raise ValueError("Paper equity calculation unavailable")
-                equity += pnl - float(self.cfg.get("commission_per_lot", 0)) * p["volume"]
+                equity += pnl - float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
         else:
             equity = float(account.equity)
         allowed, reason = self.risk.can_trade(equity, exposure / equity)
@@ -143,7 +147,10 @@ class ExecutionEngine:
         key = self.key(req)
         if key in self.seen:
             return ExecutionResult(False, None, None, "Duplicate signal")
-        if self.repo and any(a.status in {"SUBMITTING", "UNKNOWN", "PROTECTION_FAILURE"} or json.loads(a.payload).get("partial_state") in {"SUBMITTING", "UNKNOWN"} for a in self.repo.attempts(self.scope)):
+        if self.repo and any(a.status in {"SUBMITTING", "UNKNOWN", "PROTECTION_FAILURE"}
+                or json.loads(a.payload).get("partial_state") in {"SUBMITTING", "UNKNOWN"}
+                or json.loads(a.payload).get("close_reason") for a in self.repo.attempts(self.scope)
+                if a.status not in {"CLOSED", "PAPER_CLOSED", "REJECTED"}):
             return ExecutionResult(False, None, None, "Unresolved broker execution; entries suspended")
         try:
             planned, info = None, None
@@ -178,21 +185,23 @@ class ExecutionEngine:
         try:
             check = self.client.order_check(request)
         except (MT5Error, TimeoutError, ConnectionError):
-            self.repo.update_attempt(key, "REJECTED")
+            self.reject_before_send(key,payload)
             raise
         if check is None or int(check.retcode) not in (0, 10009):
-            self.repo.update_attempt(key, "REJECTED")
+            self.reject_before_send(key,payload)
             return ExecutionResult(False, None, getattr(check, "retcode", None), "Broker order_check rejected")
         if self.kill_switch_path.exists():
-            self.repo.update_attempt(key, "REJECTED")
+            self.reject_before_send(key,payload)
             return ExecutionResult(False, None, None, "Kill switch active")
         try:
+            if hasattr(self, "before_send"):
+                self.before_send(req)
             final = replace(req)
             _, final_risk = self._prepare(final)
             if (final.price, final.volume, final.sl, final.tp) != (req.price, req.volume, req.sl, req.tp) or final_risk > planned + 1e-8:
                 raise ValueError("Quote/equity/exposure changed during order_check")
         except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
-            self.repo.update_attempt(key, "REJECTED")
+            self.reject_before_send(key,payload)
             return ExecutionResult(False, None, None, str(exc))
         try:
             result = self.client.order_send(request)
@@ -207,13 +216,19 @@ class ExecutionEngine:
             self.repo.update_attempt(key, "REJECTED")
             return ExecutionResult(False, None, code, f"Broker rejected order ({code})")
         payload.update(ticket=int(result.order or result.deal), price=float(result.price), volume=float(result.volume))
-        protected = self.verify_fill(payload, getattr(result, "deal", None))
+        protected = self.verify_fill(payload, getattr(result, "deal", None), key)
         status = ("PARTIAL" if code == 10010 else "OPEN") if protected else "PROTECTION_FAILURE"
         self.repo.update_attempt(key, status, payload)
         return ExecutionResult(protected, payload["ticket"], code, status, payload["price"], result,
                                status, payload["volume"], planned)
 
-    def verify_fill(self, payload, deal=None):
+    def reject_before_send(self, key, payload):
+        # Only a provably unsent request may be reconsidered on the same candle.
+        # SUBMITTING/UNKNOWN and every actual send retain their permanent claim.
+        self.repo.update_attempt(key,"REJECTED",{**payload,"retryable_before_send":True})
+        self.seen.discard(key)
+
+    def verify_fill(self, payload, deal=None, key=None):
         positions = self.client.positions_get(symbol=payload["symbol"])
         if positions is None:
             return False
@@ -240,7 +255,13 @@ class ExecutionEngine:
             valid = valid and economics["net_rr"]+1e-8>=payload.get("minimum_net_rr",float(self.cfg.get("min_rr",1.5)))
         if valid:
             return True
-        self.close_position(p, payload["magic"])
+        if key and self.repo:
+            self.repo.update_attempt(key,"PROTECTION_FAILURE",payload)
+            self.manage_close(p,key,"Fill protection verification failed")
+            saved = next(a for a in self.repo.attempts(self.scope) if a.key==key)
+            payload.update(json.loads(saved.payload))
+        else:
+            self.close_position(p, payload["magic"])
         return False
 
     def close_position(self, p, magic):
@@ -259,6 +280,51 @@ class ExecutionEngine:
             return []
         return [dict(json.loads(a.payload), key=a.key) for a in self.repo.attempts(self.scope) if a.status == "PAPER_OPEN"]
 
+    def manage_close(self, position, key, reason):
+        """Persist exit intent before sending; never resend an ambiguous close.
+
+        Rejected requests and confirmed partial fills can retry on the next fresh
+        position snapshot. Unknown outcomes retain broker SL/TP and block entries
+        until broker history confirms closure or the journal is resolved.
+        """
+        if self.mode != TradingMode.LIVE or not self.enable_live or not self.repo:
+            return False
+        attempt = next((a for a in self.repo.attempts(self.scope) if a.key == key), None)
+        if attempt is None or attempt.status not in {"OPEN", "PARTIAL", "PROTECTION_FAILURE"}:
+            return False
+        meta = json.loads(attempt.payload)
+        if (meta.get("position_ticket") != int(position.ticket) or meta["magic"] != int(position.magic)
+                or meta["symbol"] != position.symbol):
+            return False
+        if meta.get("close_state") in {"SUBMITTING", "UNKNOWN", "DONE"}:
+            return False
+        meta["close_reason"] = reason
+        self.repo.update_attempt(key, attempt.status, meta)
+        if meta.get("partial_state") in {"SUBMITTING", "UNKNOWN"}:
+            return False
+        if not DataFeed(self.client, int(self.cfg.get("max_tick_age_seconds", 15))).is_tick_fresh(position.symbol):
+            return False
+        info, tick = self.client.symbol_info(position.symbol), self.client.symbol_info_tick(position.symbol)
+        if info is None or tick is None:
+            return False
+        request = {"action": 1, "position": int(position.ticket), "symbol": position.symbol,
+                   "volume": float(position.volume), "type": 1 if int(position.type) == 0 else 0,
+                   "price": float(tick.bid if int(position.type) == 0 else tick.ask), "magic": int(position.magic),
+                   "deviation": int(self.cfg.get("max_deviation_points", 20)), "comment": "quant-managed-exit",
+                   "type_time": 0, "type_filling": filling_mode(info)}
+        meta.update(close_reason=reason, close_state="SUBMITTING", close_requested_at=datetime.now(timezone.utc).isoformat())
+        self.repo.update_attempt(key, attempt.status, meta)
+        try:
+            result = self.client.order_send(request)
+        except (MT5Error, TimeoutError, ConnectionError):
+            result = None
+        code = getattr(result, "retcode", None)
+        meta["close_retcode"] = code
+        meta["close_state"] = ("DONE" if code == 10009 else "PARTIAL" if code == 10010 else
+                               "UNKNOWN" if code in (None, 10008, 10012, 10031) else "REJECTED")
+        self.repo.update_attempt(key, attempt.status, meta)
+        return code == 10009
+
     def reconcile(self):
         if self.mode != TradingMode.LIVE or not self.repo:
             return
@@ -267,7 +333,7 @@ class ExecutionEngine:
             raise ValueError("Broker reconciliation unavailable")
         now = datetime.now(timezone.utc)
         for attempt in self.repo.attempts(self.scope):
-            if attempt.status not in {"SUBMITTING", "UNKNOWN", "OPEN", "PARTIAL"}:
+            if attempt.status not in {"SUBMITTING", "UNKNOWN", "OPEN", "PARTIAL", "PROTECTION_FAILURE"}:
                 continue
             p = json.loads(attempt.payload)
             start = datetime.fromisoformat(p["created"]) - timedelta(minutes=1)
@@ -284,9 +350,14 @@ class ExecutionEngine:
                 stop = float(position.sl)
                 side = p["direction"]
                 unsafe = (not math.isfinite(stop) or stop <= 0 or (stop < p["sl"] if side == "BUY" else stop > p["sl"]) or float(position.volume) > p.get("requested_volume", p["volume"]) + 1e-8)
-                if unsafe:
-                    self.close_position(live[0], p["magic"])
-                    self.repo.update_attempt(attempt.key, "PROTECTION_FAILURE")
+                if unsafe and p.get("close_reason"):
+                    # The managed exit owns this request, including unknown outcomes.
+                    # Keep its state so a later poll cannot submit a duplicate close.
+                    self.repo.update_attempt(attempt.key, "PROTECTION_FAILURE", p)
+                elif unsafe:
+                    p["position_ticket"] = int(position.ticket)
+                    self.repo.update_attempt(attempt.key, "PROTECTION_FAILURE",p)
+                    self.manage_close(position,attempt.key,"Reconciliation found unsafe stop/volume")
                 else:
                     if p.get("partial_state") in {"SUBMITTING", "UNKNOWN"} and float(position.volume) < p["volume"] - 1e-8:
                         p["partial_state"] = "DONE"
@@ -301,8 +372,9 @@ class ExecutionEngine:
                     self.repo.update_attempt(attempt.key, "UNKNOWN")
                     continue
                 pnl = sum(float(d.profit) + float(d.commission) + float(d.swap) + float(getattr(d, "fee", 0)) for d in related)
-                self.repo.close_trade(p.get("ticket", 0), float(related[-1].price), pnl)
-                self.risk.register_closed_trade(pnl)
-                self.repo.update_attempt(attempt.key, "CLOSED")
+                state = self.risk.closed_state(pnl)
+                if self.repo.settle_live(attempt.key, self.scope, p.get("ticket", 0), float(related[-1].price),
+                        pnl, state, reason=p.get("close_reason")):
+                    self.risk.state = state
             elif attempt.status in {"SUBMITTING", "UNKNOWN"}:
                 self.repo.update_attempt(attempt.key, "UNKNOWN")
