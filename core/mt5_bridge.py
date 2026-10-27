@@ -150,12 +150,30 @@ def handler_for(service):
         def log_message(self, *_):
             pass  # Never log authorization or broker request/response bodies.
 
+        def reject(self,code):
+            # Drain a small rejected POST before closing. On Windows an unread body
+            # can reset the socket before the client receives its 401/403 response.
+            try:
+                size=int(self.headers.get("Content-Length",0))
+            except ValueError:
+                size=0
+            if 0<size<=65536:
+                previous_timeout=self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(.25)
+                    self.rfile.read(size)
+                except OSError:
+                    pass
+                finally:
+                    self.connection.settimeout(previous_timeout)
+            self.send_error(code)
+
         def do_POST(self):
             if not service.authorized(self.headers.get("Authorization")):
-                self.send_error(401)
+                self.reject(401)
                 return
             if self.path != "/rpc" or self.headers.get("Origin"):
-                self.send_error(403)
+                self.reject(403)
                 return
             try:
                 size = int(self.headers.get("Content-Length", 0))

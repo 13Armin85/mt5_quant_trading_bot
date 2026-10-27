@@ -114,7 +114,7 @@ class Repository:
     def record_decision(self, scope, decision):
         self.record_decisions(scope,[decision])
 
-    def record_decisions(self,scope,decisions):
+    def record_decisions(self,scope,decisions,states=None):
         # Related rule assessments share one transaction; unchanged polling does no writes.
         rows={}
         for decision in decisions:
@@ -123,8 +123,8 @@ class Repository:
                 symbol=decision["symbol"],strategy=decision.get("strategy","unknown"),
                 regime=decision.get("regime","UNCERTAIN"),session=decision.get("session","closed"),
                 stage=decision["stage"],reason_code=decision["reason_code"],
-                payload=json.dumps(decision,default=str,sort_keys=True))
-        if not rows:
+                payload=json.dumps({k:v for k,v in decision.items() if k not in {"selection","indicators"}},default=str,sort_keys=True))
+        if not rows and not states:
             return
         with Session(self.engine) as s:
             existing={row.key:row for row in s.scalars(select(DecisionRecord).where(DecisionRecord.key.in_(rows)))}
@@ -135,6 +135,8 @@ class Repository:
                 elif row.payload!=values["payload"]:
                     for column,value in values.items():
                         setattr(row,column,value)
+            for key,value in (states or {}).items():
+                s.merge(RuntimeState(key=key,payload=json.dumps(value,default=str)))
             s.commit()
 
     def decision_funnel(self, scope=None):
