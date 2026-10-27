@@ -91,9 +91,8 @@ class AppConfig(BaseModel):
                 raise ValueError(f"Invalid portfolio risk_factors for {logical}")
             schedule = meta.get("quote_schedule")
             if schedule:
-                if schedule.get("type") not in {"litefinance_forex","weekend_only"}:
-                    raise ValueError(f"Unsupported quote_schedule for {logical}")
-                ZoneInfo(schedule["timezone"])
+                from core.market_hours import validate_schedule
+                validate_schedule(schedule)
         from signals.strategies import FAMILIES
         if self.get("strategy.experiment","baseline") not in {"baseline","h1_context","breakout_retest","range_midpoint"}:
             raise ValueError("Unsupported strategy.experiment")

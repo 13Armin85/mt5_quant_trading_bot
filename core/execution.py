@@ -55,7 +55,7 @@ class ExecutionEngine:
         policy = self.risk.policy(req.symbol)
         if not self.client.health_check():
             raise ValueError("MT5 connection unhealthy")
-        if not DataFeed(self.client, int(self.cfg.get("max_tick_age_seconds", 15))).is_tick_fresh(req.symbol):
+        if not DataFeed(self.client, int(self.cfg.get("max_tick_age_seconds", 15)),self.risk.symbols).is_tick_fresh(req.symbol):
             raise ValueError("Stale or invalid tick")
         info, tick, account = self.client.symbol_info(req.symbol), self.client.symbol_info_tick(req.symbol), self.client.account_info()
         if info is None or account is None:

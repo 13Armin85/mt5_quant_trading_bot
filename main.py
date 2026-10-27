@@ -52,6 +52,9 @@ def main():
     run = commands.add_parser("run")
     run.add_argument("--mode", choices=["paper", "live"])
     commands.add_parser("health")
+    doctor=commands.add_parser("doctor",help="Read-only clock, session, candle and spread diagnostics; never sends orders")
+    doctor.add_argument("--symbol",action="append",help="Limit to a logical symbol; may be repeated")
+    doctor.add_argument("--output",default="reports/runtime_diagnostics.json")
     funnel = commands.add_parser("funnel", help="Read stored unique setup/rejection counts without MT5")
     funnel.add_argument("--scope")
     funnel.add_argument("--output", default="reports/funnel.json")
@@ -89,6 +92,19 @@ def main():
     backtest.add_argument("--max-volume", type=float, default=100)
     backtest.add_argument("--output", default="reports/backtest.json")
     args=parser.parse_args()
+    if args.command=="doctor":
+        from monitoring.diagnostics import inspect_runtime
+        from backtest.report import save_report
+        cfg=load_config();cfg.validate_runtime()
+        client=create_mt5_client(cfg,trading=False)
+        try:
+            client.initialize()
+            report=inspect_runtime(cfg,client,args.symbol)
+            save_report(report,args.output)
+            print(json.dumps({"read_only":True,"mt5_connected":report["mt5_connected"],
+                "permissions":report["permissions"],"report":args.output},ensure_ascii=True))
+        finally:client.shutdown()
+        return
     if args.command == "resume-risk":
         import uuid
         if not args.reason.strip():

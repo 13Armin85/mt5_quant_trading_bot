@@ -4,6 +4,11 @@ symbols:
     quote_schedule: &forex_schedule
       type: litefinance_forex
       timezone: Europe/Helsinki
+      source: https://www.litefinance.org/company/detail/news/109315/
+      exceptions: # Published Europe/US DST transition week; server-local dates.
+        "2026-10-25": [["23:00", "24:00"]]
+        "2026-10-26": [["00:00", "24:00"]]
+        "2026-10-30": [["00:00", "23:00"]]
     aliases: [EURUSD, EURUSDm, EURUSD.a]
     currencies: [EUR, USD]
   GBPUSD:
@@ -20,20 +25,41 @@ symbols:
     risk_factors: {gold: 1}
     broker_symbol: XAUUSD_o
     quote_schedule:
-      type: weekend_only # Daily metals sessions must be checked separately; no exact reopening is inferred.
-      timezone: Europe/Helsinki
+      type: weekly_sessions
+      timezone: America/New_York # US-market DST, separate from the Helsinki server clock.
+      source: https://www.litefinance.org/company/detail/news/109315/
+      weekly:
+        0: [["00:00", "17:00"], ["18:00", "24:00"]]
+        1: [["00:00", "17:00"], ["18:00", "24:00"]]
+        2: [["00:00", "17:00"], ["18:00", "24:00"]]
+        3: [["00:00", "17:00"], ["18:00", "24:00"]]
+        4: [["00:00", "17:00"]]
+        5: []
+        6: [["18:00", "24:00"]]
     aliases: [XAUUSD, XAUUSDm, GOLD]
     currencies: [XAU, USD]
     extra_news_currencies: [USD]
   NAS100:
     risk_factors: {us_equities: 1}
     broker_symbol: NQ
-    # Index sessions differ from forex; require fresh broker ticks without inferring opening times.
+    quote_schedule: &us_index_schedule
+      type: weekly_sessions
+      timezone: America/New_York
+      source: https://www.litefinance.org/trading/trading-instruments/stock-indices/
+      weekly:
+        0: [["00:00", "17:00"], ["18:05", "24:00"]]
+        1: [["00:00", "17:00"], ["18:05", "24:00"]]
+        2: [["00:00", "17:00"], ["18:05", "24:00"]]
+        3: [["00:00", "17:00"], ["18:05", "24:00"]]
+        4: [["00:00", "17:00"]]
+        5: []
+        6: [["18:05", "24:00"]]
     aliases: [NAS100, NQ, US100, NASDAQ100]
     # US economic news affects the index; this is not a two-currency FX pair.
     currencies: [USD]
   US30:
     risk_factors: {us_equities: 1}
     broker_symbol: YM
+    quote_schedule: *us_index_schedule
     aliases: [US30, YM, DJ30, DJIA]
     currencies: [USD]

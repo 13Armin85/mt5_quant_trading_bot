@@ -5,6 +5,7 @@ import math
 from threading import Event
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -19,7 +20,6 @@ from core.risk_manager import RiskState
 from core.correlation import CorrelationGuard
 from core.mt5_client import MT5Error
 from core.execution import filling_mode
-from signals.filters import spread_is_valid
 from signals.trade_plan import pricing_context
 from monitoring.decisions import config_revision, evaluation_id, reason_code
 from analysis.sessions import active_sessions
@@ -71,11 +71,11 @@ class TradingEngine:
             if hasattr(self.news_filter, "start_background"):
                 self.news_filter.start_background()
             while self.running:
-                if not self.client.health_check():
-                    self.client.reconnect(int(self.cfg.get("trading.reconnect_attempts", 3)), float(self.cfg.get("trading.reconnect_delay_seconds", 5)))
                 try:
+                    if not self.client.health_check():
+                        self.client.reconnect(int(self.cfg.get("trading.reconnect_attempts", 3)), float(self.cfg.get("trading.reconnect_delay_seconds", 5)))
                     self.run_cycle(symbols)
-                except (MT5Error, ValueError) as exc:
+                except (MT5Error, ValueError, TimeoutError, ConnectionError) as exc:
                     logger.warning("Runtime temporarily unavailable: {}", exc)
                     self.repository.set_state("heartbeat", {"time": datetime.now(timezone.utc).isoformat(), "connected": False, "mode": self.execution.mode.value, "last_decision": str(exc)})
                 self.stop_event.wait(poll)
@@ -134,7 +134,10 @@ class TradingEngine:
         exposure, _, _ = self.risk.account_exposure()
         if self.execution.mode == TradingMode.PAPER:
             exposure += sum(p["risk"] for p in self.execution.paper_positions())
-        status = {"time": datetime.now(timezone.utc).isoformat(), "connected": self.client.health_check(),
+        now=datetime.now(timezone.utc)
+        clocks={"utc":now.isoformat(),"server":now.astimezone(getattr(self.client,"market_timezone",timezone.utc)).isoformat(),
+                "tehran":now.astimezone(ZoneInfo("Asia/Tehran")).isoformat()}
+        status = {"time": now.isoformat(), "connected": self.client.health_check(),"clocks":clocks,
                   "mode": self.execution.mode.value, "symbols": self.resolved,
                   "scope":self.execution.scope,
                   "equity": float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity(),
@@ -203,9 +206,10 @@ class TradingEngine:
         structure = analyze_structure(frames["setup"])
         volume = analyze_volume(frames["setup"], self.cfg.get("strategy.indicators", {}))
         news_ok, news_reason, news_score = self.news_filter.evaluate(logical_symbol)
-        spread = self.feed.spread_points(symbol)
         historical = list(frames["entry"].get("spread", []))[-100:]
-        spread_ok, _ = spread_is_valid(spread, historical, float(self.cfg.get("strategy.filters.max_spread_multiplier", 2)))
+        spread_status=self.feed.spread_status(symbol,historical,float(self.cfg.get("strategy.filters.max_spread_multiplier",2)),
+            float(self.risk.policy(symbol).get("max_spread_points",40)))
+        spread,spread_ok=spread_status["points"],spread_status["allowed"]
         context = pricing_context(self.client,symbol,self.risk.policy(symbol))
         signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
         if not spread_ok:
@@ -227,17 +231,19 @@ class TradingEngine:
                     "regime":getattr(signal.market_regime,"value","UNCERTAIN"),
                     "session":", ".join(active_sessions(candle_datetime + timedelta(seconds=seconds))) or "closed",
                     "news":{"allowed":news_ok,"reason":news_reason},
-                    "spread":{"points":spread,"allowed":spread_ok},
+                    "spread":spread_status,
                     "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
         self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
         self.repository.set_state(self.execution.scope + ":decision", decision)
         signal.meta["runtime_decision"] = decision
+        assessments=[]
         for assessment in (signal.meta.get("selection") or {}).get("assessments", []):
             method = assessment["strategy"]
-            self.repository.record_decision(self.execution.scope, {**decision, "strategy":method,
+            assessments.append({**decision, "strategy":method,
                 "evaluation_id":evaluation_id(symbol,candle,method,self.revision), "stage":"setup",
                 "reason_code":"SETUP" if assessment["eligible"] else reason_code("; ".join(assessment["reasons"])),
                 "assessment":assessment})
+        self.repository.record_decisions(self.execution.scope,assessments)
         if signal.direction == Direction.HOLD:
             blocked = signal.meta.get("reason_codes", [])
             self.record_decision(decision, "analysis", "; ".join(signal.reasons), blocked[0] if blocked else "NO_SETUP")
@@ -284,9 +290,9 @@ class TradingEngine:
             raise ValueError("News changed before order submission: " + reason)
         frame = self.frames_cache.get((req.symbol, "entry"))
         history = list(frame.get("spread", []))[-100:] if frame is not None else []
-        allowed, _ = spread_is_valid(self.feed.spread_points(req.symbol), history,
-            float(self.cfg.get("strategy.filters.max_spread_multiplier",2)))
-        if not allowed:
+        spread=self.feed.spread_status(req.symbol,history,float(self.cfg.get("strategy.filters.max_spread_multiplier",2)),
+            float(self.risk.policy(req.symbol).get("max_spread_points",40)))
+        if not spread["allowed"]:
             raise ValueError("Abnormal spread before order submission")
 
     def submit_signal(self, logical_symbol, signal):
@@ -348,7 +354,7 @@ class TradingEngine:
     def load_frames(self, symbol):
         frames = {}
         for role, tf in self.cfg.get("strategy.timeframes", {}).items():
-            df = self.feed.bars(symbol, tf, int(self.cfg.get("trading.default_bars", 700)))
+            df = self.feed.bars(symbol, tf, int(self.cfg.get("trading.default_bars", 700)),allow_session_gaps=role!="entry")
             if df.empty:
                 raise ValueError(f"{symbol}: no {tf} data")
             cached = self.frames_cache.get((symbol, role))

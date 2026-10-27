@@ -23,6 +23,9 @@ def render():
         st.info("Waiting for the trading engine journal. Start the LIVE engine with Start-Live.cmd on Windows.")
         return
     heartbeat = view["heartbeat"] or {}
+    clocks=heartbeat.get("clocks") or {}
+    if clocks:
+        st.caption(f"UTC: {clocks.get('utc','')} · Server: {clocks.get('server','')} · Tehran: {clocks.get('tehran','')}")
     age = ((datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat["time"])).total_seconds()
            if heartbeat.get("time") else None)
     c1,c2,c3,c4 = st.columns(4)

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections import deque
 import math
 import time
 
 import pandas as pd
 from loguru import logger
-from core.market_hours import quote_session
+from core.market_hours import quote_session,open_seconds_between,bar_close_utc
+from signals.filters import assess_spread
 
 
 class DataFeed:
-    def __init__(self, client, max_tick_age_seconds: int = 15, symbol_config=None) -> None:
+    def __init__(self, client, max_tick_age_seconds: int = 15, symbol_config=None, *, clock=None) -> None:
         self.client = client
         self.max_tick_age_seconds = max_tick_age_seconds
         self.symbol_config = symbol_config or {}
         self._last_quote_log = {}
+        self.clock=clock or (lambda:datetime.now(timezone.utc))
+        self._spread_samples={}
 
     def _quote_schedule(self, symbol):
         for logical,meta in self.symbol_config.get("symbols",{}).items():
@@ -23,7 +27,9 @@ class DataFeed:
         return None
 
     def tick_status(self, symbol, now=None):
-        now = now or datetime.now(timezone.utc)
+        now = now or self.clock()
+        if now.tzinfo is None:
+            raise ValueError("Tick freshness requires timezone-aware UTC time")
         session = quote_session(self._quote_schedule(symbol),now)
         tick = self.tick(symbol)
         result = {"symbol":symbol,"fresh":False,"status":"MISSING_TICK","reason":"No quote received from terminal",
@@ -36,6 +42,9 @@ class DataFeed:
             stamp = datetime.fromtimestamp(float(tick.time),timezone.utc)
             age = (now-stamp).total_seconds()
             result.update(last_tick_utc=stamp.isoformat(),age_seconds=round(age,3),bid=float(tick.bid),ask=float(tick.ask))
+            from zoneinfo import ZoneInfo
+            result["last_tick_tehran"]=stamp.astimezone(ZoneInfo("Asia/Tehran")).isoformat()
+            result["last_tick_server"]=stamp.astimezone(getattr(self.client,"market_timezone",timezone.utc)).isoformat()
             if age < -2:
                 result.update(status="CLOCK_MISMATCH",reason="Quote is in the future; check trading.mt5_time_zone and system clock")
                 return result
@@ -61,7 +70,7 @@ class DataFeed:
         log("quote_status symbol={} status={} last_tick_utc={} age_seconds={} next_open_tehran={} reason={}",
             symbol,code,status["last_tick_utc"],status["age_seconds"],status.get("next_open_tehran"),status["reason"])
 
-    def bars(self, symbol: str, timeframe: str, count: int = 700, require_fresh: bool = True) -> pd.DataFrame:
+    def bars(self, symbol: str, timeframe: str, count: int = 700, require_fresh: bool = True, allow_session_gaps=False) -> pd.DataFrame:
         tf = self.client.timeframe(timeframe)
         rates = self.client.copy_rates_from_pos(symbol, tf, 1, count)
         if rates is None or len(rates) == 0:
@@ -70,9 +79,16 @@ class DataFeed:
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         self.validate_bars(df, count)
         seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}[timeframe]
-        age = (pd.Timestamp.now(tz="UTC") - df.time.iloc[-1]).total_seconds()
-        if require_fresh and not seconds <= age <= seconds * 2 + self.max_tick_age_seconds:
+        now=self.clock()
+        if now.tzinfo is None:
+            raise ValueError("Bar freshness requires timezone-aware UTC time")
+        closed=bar_close_utc(df.time.iloc[-1].to_pydatetime(),seconds,getattr(self.client,"market_timezone",timezone.utc))
+        age=(now-closed).total_seconds()
+        if allow_session_gaps and age>=0:
+            age=open_seconds_between(self._quote_schedule(symbol),closed,now)
+        if require_fresh and (now<closed or age>seconds+self.max_tick_age_seconds):
             raise ValueError(f"{symbol} {timeframe}: stale or unclosed bar")
+        df.attrs.update(last_bar_closed_at=closed.isoformat(),freshness_basis="trading_time" if allow_session_gaps else "wall_clock")
         return df
 
     @staticmethod
@@ -106,6 +122,26 @@ class DataFeed:
         if tick is None or info is None or not info.point:
             return None
         return (tick.ask - tick.bid) / info.point
+
+    def spread_status(self,symbol,historical,multiplier,absolute_limit):
+        tick,info=self.tick(symbol),self.client.symbol_info(symbol)
+        now=self.clock().timestamp()
+        samples=self._spread_samples.setdefault(symbol,deque(maxlen=600))
+        while samples and samples[0][0]<now-300:
+            samples.popleft()
+        current=None
+        valid=False
+        if tick is not None and info is not None and math.isfinite(float(info.point)) and info.point>0:
+            current=(float(tick.ask)-float(tick.bid))/float(info.point)
+            valid=all(math.isfinite(float(v)) and v>0 for v in (tick.time,tick.bid,tick.ask)) and tick.ask>=tick.bid
+            if not valid:
+                current=None
+        status=assess_spread(current,historical,multiplier,absolute_limit,[s[2] for s in samples])
+        if valid and status["allowed"] and -2<=now-float(tick.time)<=self.max_tick_age_seconds:
+            identity=(getattr(tick,"time_msc",tick.time),float(tick.bid),float(tick.ask))
+            if not samples or samples[-1][1]!=identity:
+                samples.append((float(tick.time),identity,current))
+        return status
 
     def market_depth_imbalance(self, symbol: str) -> float | None:
         try:

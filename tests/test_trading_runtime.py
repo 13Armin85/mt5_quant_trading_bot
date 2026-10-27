@@ -26,7 +26,7 @@ def paper_runtime(tmp_path, broker, risk_cfg, monkeypatch):
     execution=ExecutionEngine(broker,TradingMode.PAPER,False,str(tmp_path/"kill.flag"),risk,repo,cfg.get("trading"),"paper-account")
     frames=pd.DataFrame({"time":pd.date_range("2026-01-01",periods=220,freq="5min",tz="UTC"),"close":[1.1]*220,"atr":[.001]*220,"spread":[20]*220})
     feed=DataFeed(broker)
-    monkeypatch.setattr(feed,"bars",lambda *a:frames.copy())
+    monkeypatch.setattr(feed,"bars",lambda *a,**kw:frames.copy())
     monkeypatch.setattr("core.trading_engine.add_indicators",lambda df,*a:df)
     monkeypatch.setattr("core.trading_engine.detect_regime",lambda *a:None)
     monkeypatch.setattr("core.trading_engine.analyze_structure",lambda *a:{})
@@ -406,3 +406,33 @@ def test_wait_duration_is_separate_from_opportunity_counts_and_excludes_offline_
     assert state["totals_seconds"]["MARKET_CLOSED"]==2
     assert engine.repository.decision_funnel(engine.execution.scope)==[]
     assert not broker.sent
+
+
+def test_live_qualified_signal_with_zero_spread_history_submits_once_without_confirmation(paper_runtime,broker,monkeypatch):
+    engine=paper_runtime
+    engine.execution.mode,engine.execution.enable_live=TradingMode.LIVE,True
+    load=engine.load_frames
+    def zero_spread_history(symbol):
+        frames=load(symbol)
+        frames["entry"]["spread"]=0
+        return frames
+    monkeypatch.setattr(engine,"load_frames",zero_spread_history)
+    engine.process_symbol("EURUSD")
+    assert len(broker.sent)==1 and engine.repository.recent_trades()[0].status=="OPEN"
+    engine.process_symbol("EURUSD")
+    assert len(broker.sent)==1
+    assert engine.repository.get_state("analysis:EURUSD")["direction"]=="HOLD"
+
+
+def test_temporary_reconnect_failure_does_not_end_autonomous_loop(paper_runtime,broker,monkeypatch):
+    from core.mt5_client import MT5Error
+    engine=paper_runtime;engine.cfg.settings["trading"]["poll_seconds"]=.001
+    calls=[]
+    monkeypatch.setattr(broker,"health_check",lambda:bool(calls))
+    def reconnect(*args):
+        calls.append("attempt")
+        raise MT5Error("Temporary connection outage")
+    monkeypatch.setattr(broker,"reconnect",reconnect,raising=False)
+    monkeypatch.setattr(engine,"run_cycle",lambda *_:engine.stop())
+    engine.run_forever()
+    assert calls==["attempt"] and not broker.sent

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 def healthy(path="/app/data/trading_bot.db", max_age=180):
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as db:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as db:
             row = db.execute("SELECT payload FROM runtime_state WHERE key='heartbeat'").fetchone()
         state = json.loads(row[0])
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(state["time"])).total_seconds()

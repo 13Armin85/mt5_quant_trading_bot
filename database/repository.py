@@ -112,13 +112,29 @@ class Repository:
                     if row.key.startswith(prefix)}
 
     def record_decision(self, scope, decision):
-        # Polling and restarts update the same event; they never inflate the funnel.
-        key = f"{scope}:{decision['evaluation_id']}:{decision['stage']}:{decision['reason_code']}"
+        self.record_decisions(scope,[decision])
+
+    def record_decisions(self,scope,decisions):
+        # Related rule assessments share one transaction; unchanged polling does no writes.
+        rows={}
+        for decision in decisions:
+            key=f"{scope}:{decision['evaluation_id']}:{decision['stage']}:{decision['reason_code']}"
+            rows[key]=dict(key=key,scope=scope,evaluation_id=decision["evaluation_id"],
+                symbol=decision["symbol"],strategy=decision.get("strategy","unknown"),
+                regime=decision.get("regime","UNCERTAIN"),session=decision.get("session","closed"),
+                stage=decision["stage"],reason_code=decision["reason_code"],
+                payload=json.dumps(decision,default=str,sort_keys=True))
+        if not rows:
+            return
         with Session(self.engine) as s:
-            s.merge(DecisionRecord(key=key, scope=scope, evaluation_id=decision["evaluation_id"],
-                symbol=decision["symbol"], strategy=decision.get("strategy", "unknown"),
-                regime=decision.get("regime", "UNCERTAIN"), session=decision.get("session", "closed"),
-                stage=decision["stage"], reason_code=decision["reason_code"], payload=json.dumps(decision, default=str)))
+            existing={row.key:row for row in s.scalars(select(DecisionRecord).where(DecisionRecord.key.in_(rows)))}
+            for key,values in rows.items():
+                row=existing.get(key)
+                if row is None:
+                    s.add(DecisionRecord(**values))
+                elif row.payload!=values["payload"]:
+                    for column,value in values.items():
+                        setattr(row,column,value)
             s.commit()
 
     def decision_funnel(self, scope=None):
