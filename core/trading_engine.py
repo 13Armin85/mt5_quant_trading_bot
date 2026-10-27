@@ -155,10 +155,9 @@ class TradingEngine:
                   "updated_at": datetime.now(timezone.utc).isoformat()}
         if reason:
             result.update(direction="HOLD", reason=reason)
-        self.repository.record_decision(self.execution.scope, result)
-        self.repository.set_state(self.execution.scope + ":decision", result)
         analysis = self.repository.get_state("analysis:" + result["symbol"], {})
-        self.repository.set_state("analysis:" + result["symbol"], {**analysis, **result})
+        self.repository.record_decisions(self.execution.scope,[result],states={
+            self.execution.scope+":decision":result,"analysis:"+result["symbol"]:{**analysis,**result}})
         if stage in {"risk","execution"}:
             waiting = result["reason_code"] if result["reason_code"] in {"LOSS_PAUSE","LOSS_LIMIT","DAILY_COUNT","KILL_SWITCH"} else None
             self.track_wait(result["symbol"],"risk",waiting)
@@ -169,6 +168,8 @@ class TradingEngine:
         state = self.repository.get_state(key,{"totals_seconds":{}})
         now = self.risk.clock()
         previous = state.get("reason_code")
+        if previous is None and code is None:
+            return
         if previous and state.get("last_observed"):
             delta = (now-datetime.fromisoformat(state["last_observed"])).total_seconds()
             if 0<=delta<=float(self.cfg.get("trading.poll_seconds",2))*2:
@@ -212,6 +213,11 @@ class TradingEngine:
         spread,spread_ok=spread_status["points"],spread_status["allowed"]
         context = pricing_context(self.client,symbol,self.risk.policy(symbol))
         signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
+        if not news_ok and signal.direction!=Direction.HOLD:
+            signal.direction=Direction.HOLD
+            signal.stop_loss=signal.take_profit=signal.risk_reward=None
+            signal.reasons.append(news_reason)
+            signal.meta.setdefault("reason_codes",[]).insert(0,"NEWS")
         if not spread_ok:
             signal.direction = Direction.HOLD
             signal.stop_loss = signal.take_profit = signal.risk_reward = None
@@ -233,8 +239,6 @@ class TradingEngine:
                     "news":{"allowed":news_ok,"reason":news_reason},
                     "spread":spread_status,
                     "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
-        self.repository.set_state(f"analysis:{symbol}", {**decision,"indicators":signal.meta.get("indicators"),"updated_at":datetime.now(timezone.utc).isoformat()})
-        self.repository.set_state(self.execution.scope + ":decision", decision)
         signal.meta["runtime_decision"] = decision
         assessments=[]
         for assessment in (signal.meta.get("selection") or {}).get("assessments", []):
@@ -246,9 +250,9 @@ class TradingEngine:
         self.repository.record_decisions(self.execution.scope,assessments)
         if signal.direction == Direction.HOLD:
             blocked = signal.meta.get("reason_codes", [])
-            self.record_decision(decision, "analysis", "; ".join(signal.reasons), blocked[0] if blocked else "NO_SETUP")
+            self.record_decision(decision, "analysis", "; ".join(signal.reasons), blocked[0] if blocked else "NO_SETUP",indicators=signal.meta.get("indicators"))
         else:
-            self.record_decision(decision, "analysis", code="CANDIDATE")
+            self.record_decision(decision, "analysis", code="CANDIDATE",indicators=signal.meta.get("indicators"))
         if new_signal:
             logger.info("signal {}", json.dumps({k:v for k,v in decision.items() if k!="selection"}, ensure_ascii=False))
         if signal.direction == Direction.HOLD:
