@@ -209,7 +209,10 @@ class MT5Client:
     def _call(self, fn, *args, **kwargs):
         if not self.health_check():
             raise MT5Error("MT5 connection is not healthy")
-        result = fn(*args, **kwargs)
+        # MetaTrader5's native order_check/order_send reject an empty keyword
+        # expansion as "Unnamed arguments not allowed". Call positional-only
+        # methods without **{} so the C extension receives the expected form.
+        result = fn(*args, **kwargs) if kwargs else fn(*args)
         if result is None:
             code = mt5.last_error() if mt5 else None
             logger.error("MT5 call {} failed code={}", getattr(fn, "__name__", fn), code[0] if code else None)
