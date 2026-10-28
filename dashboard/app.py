@@ -61,15 +61,21 @@ def render():
     for analysis in view["analyses"]:
         if not isinstance(analysis, dict):
             continue
-        st.write(analysis["symbol"], analysis.get("strategy"), analysis.get("direction"))
+        st.write(analysis["symbol"], analysis.get("profile", "baseline"), analysis.get("strategy"), analysis.get("direction"))
         if analysis.get("reason"):
             st.caption(analysis["reason"])
         st.caption(f"Analyzed: {analysis.get('updated_at','')} · {analysis.get('news',{}).get('reason','')}")
         selection = analysis.get("selection") or {}
         st.caption(selection.get("reason", ""))
+        if analysis.get("candidate_plans"):
+            with st.expander("Candidate trade plans"):
+                st.dataframe([{key: value for key, value in plan.items() if key != "trade_plan"}
+                    for plan in analysis["candidate_plans"]], width="stretch")
         st.dataframe(selection.get("assessments",[]), width="stretch")
         with st.expander("Indicators and oscillators · " + analysis["symbol"]):
             st.json(analysis.get("indicators"))
+    st.subheader("Open journal positions by profile")
+    st.dataframe(view.get("positions", []), width="stretch")
     st.subheader("Recent trades / executions")
     st.dataframe(view["trades"], width="stretch")
     with st.expander("Runtime details"):

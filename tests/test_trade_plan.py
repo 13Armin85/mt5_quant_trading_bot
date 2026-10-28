@@ -46,6 +46,14 @@ def test_spread_and_entry_slippage_are_in_the_planned_entry():
     assert buy.entry==pytest.approx(100.3) and sell.entry==pytest.approx(99.9)
 
 
+def test_profile_rejects_round_trip_cost_that_consumes_too_much_stop_budget():
+    cfg=config(); cfg.settings["profile"]={"name":"scalping","max_cost_to_stop_fraction":.20}
+    cx=context(); cx["spread_price"]=.8
+    plan=build_trade_plan(frames(),Direction.BUY,MarketRegime.TRENDING_BULLISH,"momentum",cfg,cx)
+    assert not plan.accepted and plan.cost_to_stop_fraction>.20
+    assert "cost-to-stop" in plan.reason
+
+
 def test_near_resistance_can_reduce_target_without_crossing_it(monkeypatch):
     monkeypatch.setattr("signals.trade_plan._swings",lambda *a:([(20,103.2)],[(20,99.)]))
     cfg=config(True);cfg.settings["strategy"]["reward_risk"]["trend_target"]=2.5

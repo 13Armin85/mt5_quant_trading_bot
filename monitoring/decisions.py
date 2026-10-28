@@ -4,7 +4,10 @@ import json
 
 
 def config_revision(cfg):
-    return hashlib.sha256(json.dumps({"settings": cfg.settings, "symbols": cfg.symbols,
+    settings = dict(cfg.settings)
+    if not settings.get("profiles", {}).get("enabled"):
+        settings.pop("profiles", None)
+    return hashlib.sha256(json.dumps({"settings": settings, "symbols": cfg.symbols,
         "regimes": cfg.strategy}, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -17,6 +20,10 @@ def reason_code(reason):
     for code, words in (
         ("KILL_SWITCH", ("kill switch",)),
         ("DUPLICATE", ("duplicate", "existing symbol", "existing paper symbol")),
+        ("QUOTE_CHANGE", ("quote changed", "quote change", "repriced order_check")),
+        ("BROKER_REJECT", ("broker order_check rejected", "broker rejected order")),
+        ("PROFILE_CAPACITY", ("profile position capacity",)),
+        ("COST", ("cost-to-stop", "costs/conversion", "round-trip spread")),
         ("EXECUTION_UNKNOWN", ("ambiguous", "unresolved", "protection_failure", "unknown")),
         ("DATA_STALE", ("stale", "fresh quote", "unclosed", "clock")),
         ("WARMUP", ("warmup", "warming", "insufficient multi-timeframe")),
@@ -27,7 +34,7 @@ def reason_code(reason):
         ("REGIME", ("regime", "requires a ranging", "requires a trending")),
         ("SCORE", ("confidence", "selection score", "independent strategy groups")),
         ("STRUCTURE", ("structure", "obstacle", "stop distance", "stops/freeze")),
-        ("RR", ("reward/risk", "risk/reward",)),
+        ("RR", ("reward/risk", "risk/reward", "no target meets", "net reward target")),
         ("MARGIN", ("margin",)),
         ("TOTAL_RISK", ("total open risk", "risk budget", "risk exceeds",)),
         ("MIN_LOT", ("minimum", "volume",)),

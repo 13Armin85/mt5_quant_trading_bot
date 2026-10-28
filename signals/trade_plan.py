@@ -25,6 +25,7 @@ class TradePlan:
     cost_basis: str = "unverified_price_geometry"
     loss_per_lot: float | None = None
     reward_per_lot: float | None = None
+    cost_to_stop_fraction: float | None = None
     obstacle: float | None = None
     stop_source: str = "ATR"
     reason: str = ""
@@ -157,6 +158,11 @@ def build_trade_plan(frames, direction, regime, strategy, cfg, context=None):
             raise ValueError("Account-currency stop/profit estimate unavailable")
         unit_value = probe/atr
         loss = -stop_pnl+commission
+        cost_limit = cfg.get("profile.max_cost_to_stop_fraction")
+        if cost_limit is not None:
+            plan.cost_to_stop_fraction = (unit_value*(spread+2*slip)+commission)/loss
+            if plan.cost_to_stop_fraction > float(cost_limit):
+                raise ValueError("Round-trip spread, slippage and commission exceed profile cost-to-stop limit")
         if cfg.get("strategy.experiment","baseline")=="range_midpoint" and regime==MarketRegime.RANGING:
             midpoint = float(x.get("bb_mid",float("nan")))
             target = _snap(midpoint-sign*buffer,tick,side=="SELL")

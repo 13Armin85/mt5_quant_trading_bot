@@ -140,13 +140,14 @@ class Repository:
             s.commit()
 
     def decision_funnel(self, scope=None):
-        columns = [DecisionRecord.symbol, DecisionRecord.strategy, DecisionRecord.regime,
+        profile = func.coalesce(func.json_extract(DecisionRecord.payload, "$.profile"), "baseline")
+        columns = [DecisionRecord.symbol, profile, DecisionRecord.strategy, DecisionRecord.regime,
                    DecisionRecord.session, DecisionRecord.stage, DecisionRecord.reason_code]
         query = select(*columns, func.count(func.distinct(DecisionRecord.evaluation_id))).group_by(*columns)
         if scope:
             query = query.where(DecisionRecord.scope == scope)
         with Session(self.engine) as s:
-            return [dict(zip(["symbol", "strategy", "regime", "session", "stage", "reason_code", "setups"], row))
+            return [dict(zip(["symbol", "profile", "strategy", "regime", "session", "stage", "reason_code", "setups"], row))
                     for row in s.execute(query).all()]
 
     @staticmethod

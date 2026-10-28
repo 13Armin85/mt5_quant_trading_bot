@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import pandas as pd
 import pytest
@@ -47,6 +47,48 @@ def test_runtime_paper_entry_exit_and_no_broker_order(paper_runtime,broker):
     assert not engine.execution.paper_positions() and not broker.sent
     assert engine.repository.recent_trades()[0].status=="PAPER_CLOSED"
     assert engine.repository.get_state("paper-account:paper_pnl") < 0
+
+
+def test_profiles_keep_cache_and_analysis_independent_when_intraday_data_missing(paper_runtime, monkeypatch):
+    base=paper_runtime
+    base.cfg.settings["profiles"]["enabled"]=True
+    engine=TradingEngine(base.cfg,base.client,base.feed,base.risk,base.execution,base.repository,base.news_filter)
+    source=base.feed.bars
+    seen=[]
+    def bars(symbol,tf,*args,**kwargs):
+        seen.append(tf)
+        if tf=="H4":
+            raise ValueError("H4 history unavailable")
+        frame=source(symbol,tf,*args,**kwargs)
+        frame["close"]={"M1":1.101,"M5":1.105,"M15":1.115,"H1":1.11}[tf]
+        return frame
+    monkeypatch.setattr(base.feed,"bars",bars)
+    monkeypatch.setattr(engine.profile_engines["scalping"],"generate",
+        lambda *a:Signal("EURUSD",Direction.HOLD,.2,1.1,None,None,signal_id="scalp-hold",
+            meta={"profile":"scalping","config_revision":"scalp-test","reason_codes":["NO_SETUP"]}))
+    engine.run_cycle(["EURUSD"])
+    assert "H4" in seen and "M1" in seen
+    assert base.repository.get_state("analysis:EURUSD:intraday")["stage"]=="availability"
+    assert base.repository.get_state("analysis:EURUSD:scalping")["profile"]=="scalping"
+    assert engine.latest_entry_frames[("EURUSD","scalping")].close.iloc[-1]==1.101
+    assert all(len(key)==4 for key in engine.frames_cache)
+
+
+def test_profile_max_holding_policy_restores_from_paper_journal(paper_runtime, broker):
+    base=paper_runtime
+    base.cfg.settings["profiles"]["enabled"]=True
+    engine=TradingEngine(base.cfg,base.client,base.feed,base.risk,base.execution,base.repository,base.news_filter)
+    req=OrderRequest("EURUSD",Direction.BUY,.1,1.1,1.099,1.103,20,signal_id="profile-position",profile="scalping")
+    assert engine.execution.execute(req).success
+    attempt=engine.repository.attempts(engine.execution.scope)[0]
+    payload=json.loads(attempt.payload)
+    payload["created"]=(datetime.now(timezone.utc)-timedelta(hours=4)).isoformat()
+    engine.repository.update_attempt(attempt.key,"PAPER_OPEN",payload)
+    restarted=TradingEngine(base.cfg,base.client,base.feed,base.risk,base.execution,base.repository,base.news_filter)
+    restarted.manage_positions()
+    assert not restarted.execution.paper_positions() and not broker.sent
+    exit_state=engine.repository.get_state(engine.execution.scope+":position_management")
+    assert exit_state["profile"]=="scalping" and "maximum holding" in exit_state["reason"]
 
 
 def test_paper_positions_restore_and_manage_under_kill_switch(paper_runtime,broker):

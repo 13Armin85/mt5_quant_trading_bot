@@ -75,7 +75,7 @@ def strategy_direction(frames, regime, family="auto", lookback=20, pullback_atr=
     bearish = macro.ema_20 < macro.ema_50 < macro.ema_200 and trend.ema_20 < trend.ema_50 < trend.ema_200
     options = options or {}
     experiment = options.get("experiment","baseline")
-    if experiment=="h1_context" and family=="trend_pullback":
+    if experiment in {"h1_context", "balanced"} and family=="trend_pullback":
         bullish = trend.ema_20 > trend.ema_50 > trend.ema_200 and setup.ema_20>setup.ema_50
         bearish = trend.ema_20 < trend.ema_50 < trend.ema_200 and setup.ema_20<setup.ema_50
     buy = sell = False

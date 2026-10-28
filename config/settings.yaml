@@ -34,6 +34,50 @@ trading:
   correlation_minimum_history: 60
   correlation_lookback: 250
 
+# Research profiles are opt-in and rejected in LIVE mode. Shared portfolio risk
+# and broker execution limits above always remain in force.
+profiles:
+  enabled: false
+  allocation: fixed_priority
+  priority: [intraday, scalping]
+  scalping:
+    enabled: true
+    max_open_positions: 1
+    max_cost_to_stop_fraction: 0.25
+    strategy:
+      enabled_strategies: [trend_pullback, breakout, momentum, ema_cross, macd_cross]
+      timeframes: {macro: H1, trend: M15, setup: M5, entry: M1}
+      selection: {minimum_score: 0.65, conflict_policy: strict}
+      stop_atr_multiple: 1.5
+    trading:
+      min_confidence: 0.70
+      max_spread_points: 30
+      slippage_points: 20
+    position_management:
+      target_holding_minutes: 45 # Informational; no automatic exit at target.
+      max_holding_minutes: 180
+      defensive_exit_cooldown_seconds: 900
+      break_even_trigger_r: 1.0
+  intraday:
+    enabled: true
+    max_open_positions: 1
+    max_cost_to_stop_fraction: 0.40
+    strategy:
+      experiment: balanced # Alias of the existing h1_context relaxation for trend_pullback only.
+      enabled_strategies: [trend_pullback, breakout, mean_reversion, momentum, ema_cross, macd_cross, ichimoku, supertrend]
+      timeframes: {macro: H4, trend: H1, setup: M15, entry: M5}
+      selection: {minimum_score: 0.65, conflict_policy: strict}
+      stop_atr_multiple: 1.5
+    trading:
+      min_confidence: 0.70
+      max_spread_points: 40
+      slippage_points: 20
+    position_management:
+      target_holding_minutes: 240
+      max_holding_minutes: 720
+      defensive_exit_cooldown_seconds: 1800
+      break_even_trigger_r: 1.0
+
 news:
   enabled: true
   fail_closed: true

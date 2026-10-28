@@ -156,7 +156,8 @@ class ExecutionEngine:
             planned, info = None, None
             if self.risk is not None:
                 info, planned = self._prepare(req)
-            payload = {"symbol": req.symbol, "direction": req.direction.value, "volume": req.volume,
+            payload = {"symbol": req.symbol, "direction": req.direction.value, "profile": req.profile,
+                       "volume": req.volume,
                        "price": req.price, "sl": req.sl, "tp": req.tp, "risk": planned,
                        "magic": req.magic, "comment": (req.signal_id or req.comment)[:31],
                        "initial_risk": abs(req.price - req.sl), "created": datetime.now(timezone.utc).isoformat()}
@@ -196,10 +197,48 @@ class ExecutionEngine:
         try:
             if hasattr(self, "before_send"):
                 self.before_send(req)
+            fresh_tick = self.client.symbol_info_tick(req.symbol)
+            if fresh_tick is None:
+                raise ValueError("Quote unavailable after order_check")
+            fresh_price = float(fresh_tick.ask if req.direction == Direction.BUY else fresh_tick.bid)
+            if abs(fresh_price - req.price) > req.deviation * float(info.point) + 1e-12:
+                raise ValueError("Quote changed beyond permitted deviation during order_check")
             final = replace(req)
-            _, final_risk = self._prepare(final)
-            if (final.price, final.volume, final.sl, final.tp) != (req.price, req.volume, req.sl, req.tp) or final_risk > planned + 1e-8:
-                raise ValueError("Quote/equity/exposure changed during order_check")
+            final_info, final_risk = self._prepare(final)
+            if final.sl != req.sl or final.tp != req.tp or final.volume > req.volume + 1e-8:
+                raise ValueError("Stops or volume changed during order_check")
+            if abs(final.price - req.price) > req.deviation * float(final_info.point) + 1e-12:
+                raise ValueError("Quote changed beyond permitted deviation during order_check")
+            if final_risk > planned + 1e-8:
+                # A fresh quote can increase loss per lot. Keep the original risk
+                # ceiling by reducing volume to a broker-valid step, if possible.
+                per_lot = self.risk.loss_per_lot(req.symbol,
+                    final.price + (1 if req.direction == Direction.BUY else -1) *
+                    float(self.risk.policy(req.symbol).get("slippage_points", 0)) * final_info.point,
+                    final.sl, final_info, req.direction)
+                final.volume = self.risk._floor_step(min(final.volume, planned / per_lot), float(final_info.volume_step))
+                if final.volume < final_info.volume_min:
+                    raise ValueError("Quote change leaves volume below broker minimum")
+                final_info, final_risk = self._prepare(final)
+            if final_risk > planned + 1e-8:
+                raise ValueError("Final risk exceeds checked risk after quote change")
+            changed = (final.price, final.volume, final.sl, final.tp) != (req.price, req.volume, req.sl, req.tp)
+            if changed:
+                request.update(price=final.price, volume=final.volume, sl=final.sl, tp=final.tp)
+                second = self.client.order_check(request)
+                if second is None or int(second.retcode) not in (0, 10009):
+                    raise ValueError("Broker order_check rejected repriced order")
+                checked = replace(final)
+                _, checked_risk = self._prepare(checked)
+                if ((checked.price, checked.volume, checked.sl, checked.tp) !=
+                    (final.price, final.volume, final.sl, final.tp) or checked_risk > planned + 1e-8):
+                    raise ValueError("Quote/equity/exposure changed during repriced order_check")
+            payload.update(price=final.price, volume=final.volume, risk=final_risk,
+                requested_volume=final.volume, initial_risk=abs(final.price - final.sl))
+            payload["reward_risk"] = self.risk.reward_risk(req.symbol, req.direction,
+                final.price, final.sl, final.tp, final_info)
+            self.repo.update_attempt(key, "SUBMITTING", payload)
+            planned = final_risk
         except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
             self.reject_before_send(key,payload)
             return ExecutionResult(False, None, None, str(exc))

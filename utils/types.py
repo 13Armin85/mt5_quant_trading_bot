@@ -68,6 +68,7 @@ class OrderRequest:
     comment: str = "quant-bot"
     signal_id: str | None = None
     minimum_net_rr: float | None = None
+    profile: str = "baseline"
 
 
 @dataclass(slots=True)

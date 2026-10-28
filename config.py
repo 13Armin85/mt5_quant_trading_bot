@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -49,12 +50,64 @@ class AppConfig(BaseModel):
     strategy: dict[str, Any]
     env: EnvSettings
 
+    def for_profile(self, name: str) -> "AppConfig":
+        profiles = self.get("profiles", {})
+        if name not in {"scalping", "intraday"} or name not in profiles:
+            raise ValueError(f"Unknown trading profile: {name}")
+        settings = deepcopy(self.settings)
+        overrides = profiles[name]
+        for section in ("strategy", "trading", "position_management"):
+            def merge(target, source):
+                for key, value in source.items():
+                    if isinstance(value, dict) and isinstance(target.get(key), dict):
+                        merge(target[key], value)
+                    else:
+                        target[key] = deepcopy(value)
+            merge(settings[section], overrides.get(section, {}))
+        settings["profile"] = {"name": name,
+            "max_open_positions": overrides.get("max_open_positions", 1),
+            "max_cost_to_stop_fraction": overrides.get("max_cost_to_stop_fraction", .25 if name == "scalping" else .40)}
+        settings["profiles"]["enabled"] = False  # validate the resolved profile without recursion
+        return self.model_copy(update={"settings": settings}, deep=True)
+
     def validate_runtime(self) -> None:
         import math
         from zoneinfo import ZoneInfo
         ZoneInfo(str(self.get("trading.mt5_time_zone", "UTC")))
         if str(self.get("trading.mode", "PAPER")).upper() not in {"PAPER", "LIVE", "BACKTEST"}:
             raise ValueError("trading.mode must be PAPER, LIVE or BACKTEST")
+        profiles = self.get("profiles", {})
+        if profiles.get("enabled"):
+            if str(self.get("trading.mode", "PAPER")).upper() == "LIVE":
+                raise ValueError("Experimental profiles are available only in PAPER/BACKTEST")
+            if profiles.get("allocation", "fixed_priority") != "fixed_priority":
+                raise ValueError("Unsupported profile allocation policy")
+            enabled = [name for name in ("scalping", "intraday") if profiles.get(name, {}).get("enabled")]
+            priority = profiles.get("priority", ["intraday", "scalping"])
+            if not enabled or not isinstance(priority, list) or set(priority) != {"scalping", "intraday"} or len(priority) != 2:
+                raise ValueError("Profiles require at least one enabled profile and unique priority")
+            for name in ("scalping", "intraday"):
+                item = profiles.get(name, {})
+                if not isinstance(item, dict):
+                    raise ValueError(f"Invalid profile {name}")
+                if not item.get("enabled"):
+                    continue
+                if int(item.get("max_open_positions", 1)) < 1:
+                    raise ValueError("Profile capacity must be positive")
+                fraction = float(item.get("max_cost_to_stop_fraction", .25 if name == "scalping" else .40))
+                if not math.isfinite(fraction) or not 0 < fraction < 1:
+                    raise ValueError("Invalid profile cost-to-stop limit")
+                resolved = self.for_profile(name)
+                resolved.validate_runtime()
+                for cost in ("commission_per_lot", "slippage_points"):
+                    if float(resolved.get("trading." + cost, 0)) < float(self.get("trading." + cost, 0)):
+                        raise ValueError("Profile cost assumptions cannot be lower than shared execution costs")
+                if float(resolved.get("trading.max_spread_points", 40)) > float(self.get("trading.max_spread_points", 40)):
+                    raise ValueError("Profile spread limit cannot exceed shared broker limit")
+                target = float(resolved.get("position_management.target_holding_minutes", 0))
+                maximum = float(resolved.get("position_management.max_holding_minutes", 0))
+                if not 0 < target < maximum:
+                    raise ValueError("Profile target holding time must be positive and below maximum")
         for key in ("risk_per_trade", "max_total_risk"):
             value = float(self.get(f"trading.{key}", .01))
             if not math.isfinite(value) or not 0 < value <= .01:
@@ -96,8 +149,10 @@ class AppConfig(BaseModel):
                 from core.market_hours import validate_schedule
                 validate_schedule(schedule)
         from signals.strategies import FAMILIES
-        if self.get("strategy.experiment","baseline") not in {"baseline","h1_context","breakout_retest","range_midpoint"}:
+        if self.get("strategy.experiment","baseline") not in {"baseline","h1_context","balanced","breakout_retest","range_midpoint"}:
             raise ValueError("Unsupported strategy.experiment")
+        if self.get("strategy.experiment") == "balanced" and str(self.get("trading.mode", "PAPER")).upper() == "LIVE":
+            raise ValueError("Balanced research experiment is available only in PAPER/BACKTEST")
         low = float(self.get("strategy.filters.min_atr_fraction",.0005))
         high = float(self.get("strategy.filters.max_atr_fraction",.02))
         extreme = float(self.get("strategy.filters.high_volatility_fraction",.04))
@@ -131,6 +186,12 @@ class AppConfig(BaseModel):
             value = float(self.get(f"strategy.selection.{key}",default))
             if not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError(f"strategy.selection.{key} must be between 0 and 1")
+        conflict_policy = self.get("strategy.selection.conflict_policy", "strict")
+        margin = float(self.get("strategy.selection.conflict_quality_margin", .20))
+        if conflict_policy not in {"strict", "quality_margin"} or not math.isfinite(margin) or not 0 < margin <= 1:
+            raise ValueError("Invalid selection conflict policy or quality margin")
+        if conflict_policy != "strict" and str(self.get("trading.mode", "PAPER")).upper() == "LIVE":
+            raise ValueError("Experimental conflict policy is available only in PAPER/BACKTEST")
         if not 1<=int(self.get("strategy.selection.minimum_groups",1))<=4:
             raise ValueError("strategy.selection.minimum_groups must be 1..4")
         component_weights = self.get("strategy.selection.component_weights",{})
@@ -176,6 +237,14 @@ class AppConfig(BaseModel):
         cooldown = float(self.get("position_management.defensive_exit_cooldown_seconds", 900))
         if not math.isfinite(cooldown) or cooldown < 0:
             raise ValueError("position_management.defensive_exit_cooldown_seconds must be nonnegative")
+        if self.get("profile.name"):
+            target = float(self.get("position_management.target_holding_minutes", 0))
+            maximum = float(self.get("position_management.max_holding_minutes", 0))
+            fraction = float(self.get("profile.max_cost_to_stop_fraction", 0))
+            if not 0 < target < maximum or not math.isfinite(maximum):
+                raise ValueError("Profile holding target must be positive and below maximum")
+            if not math.isfinite(fraction) or not 0 < fraction < 1:
+                raise ValueError("Invalid profile cost-to-stop limit")
         for key, default in (("max_daily_loss", .03), ("max_weekly_loss", .06), ("max_drawdown", .10), ("min_confidence", .70)):
             value = float(self.get(f"trading.{key}", default))
             if not math.isfinite(value) or not 0 < value <= 1:

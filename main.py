@@ -80,8 +80,10 @@ def main():
     backtest.add_argument("--contract-value", type=float)
     backtest.add_argument("--compare", action="store_true")
     backtest.add_argument("--compare-experiments",action="store_true",help="Compare three fixed research hypotheses against their baseline")
-    backtest.add_argument("--experiment",default="baseline",choices=["baseline","h1_context","breakout_retest","range_midpoint"])
+    backtest.add_argument("--experiment",default="baseline",choices=["baseline","h1_context","balanced","breakout_retest","range_midpoint"])
     backtest.add_argument("--family", default="ensemble", choices=["auto", "ensemble", *FAMILIES])
+    backtest.add_argument("--profile", default="baseline", choices=["baseline","scalping","intraday","combined","compare"],
+                          help="Profile research; compare runs each profile and one shared chronological portfolio")
     backtest.add_argument("--spread", type=float, default=0, help="Bid/Ask spread in PRICE units, not points/pips")
     backtest.add_argument("--slippage", type=float, default=0, help="Adverse slippage per fill in PRICE units")
     backtest.add_argument("--commission", type=float, default=7, help="Round-trip account currency per lot")
@@ -182,6 +184,8 @@ def main():
         from backtest.report import save_report
         if args.compare and args.compare_experiments:
             parser.error("Choose either --compare or --compare-experiments")
+        if args.profile != "baseline" and (args.compare or args.compare_experiments or args.signals):
+            parser.error("Profile research generates its own signals; omit --signals/--compare/--compare-experiments")
         cfg = load_config(); cfg.validate_runtime()
         cfg = cfg.model_copy(deep=True)
         cfg.settings["strategy"]["experiment"] = args.experiment
@@ -196,8 +200,53 @@ def main():
                       risk_fraction=float(cfg.get("trading.risk_per_trade",.005)),minimum_net_rr=max(float(cfg.get("trading.min_rr",1.5)),float(cfg.get("strategy.reward_risk.minimum_net_rr",1.5))))
         if args.symbol_costs:
             kwargs["symbol_costs"] = json.loads(Path(args.symbol_costs).read_text(encoding="utf-8"))
+        if args.profile != "baseline":
+            kwargs["profile_priority"] = cfg.get("profiles.priority", ["intraday","scalping"])
+            kwargs["profile_configs"] = {name:{
+                "max_open_positions":int(cfg.get(f"profiles.{name}.max_open_positions",1)),
+                "position_management":cfg.for_profile(name).get("position_management",{})}
+                for name in ("scalping","intraday")}
         if not args.signals and (args.contract_value is None or args.contract_value <= 0):
             parser.error("--contract-value is required without --signals; use broker account-currency value per one price unit/lot")
+        if args.profile != "baseline":
+            if args.contract_value is None or args.contract_value <= 0:
+                parser.error("--contract-value is required for profile research")
+            names = ([args.profile] if args.profile in {"scalping","intraday"} else ["scalping","intraday"])
+            generated = {}
+            errors = {}
+            for name in names:
+                try:
+                    profile_cfg = cfg.for_profile(name)
+                    profile_cfg.validate_runtime()
+                    generated[name] = generate_signals(bars, profile_cfg, args.contract_value,
+                        profile_cfg.get("strategy.family","ensemble"), costs=kwargs)
+                except ValueError as exc:
+                    errors[name] = str(exc)
+            if not generated:
+                raise ValueError("No profile has sufficient complete historical bars: " + str(errors))
+            if args.profile == "combined" and errors:
+                raise ValueError("Combined portfolio requires complete history for both profiles: " + str(errors))
+            from backtest.provenance import manifest
+            if args.profile == "compare" and errors:
+                errors["combined"] = "Combined portfolio requires complete history for both profiles"
+            scenarios = names + (["combined"] if args.profile in {"combined","compare"} and not errors else [])
+            report = {"profiles":{},"errors":errors,"news_validated":False,
+                "allocation":"fixed profile priority with per-profile capacity and shared portfolio risk",
+                "limitations":["OHLC bars do not establish intrabar Bid/Ask or fill order", "Scalping needs broker-verified tick and cost history"],
+                "manifest":manifest(bars,cfg,kwargs)}
+            for name in scenarios:
+                if name != "combined" and name not in generated:
+                    continue
+                selected = generated[name] if name != "combined" else pd.concat(generated.values(),ignore_index=True).sort_values(
+                    ["time","profile"],kind="stable").reset_index(drop=True)
+                test = BacktestEngine(**kwargs)
+                trades, metrics = test.run(bars, selected)
+                report["profiles"][name] = {"metrics":metrics,"rejections":test.rejections,
+                    "signals":len(selected),"trades":len(trades)}
+                Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+                trades.to_csv(Path(args.output).with_name(Path(args.output).stem+f".{name}.trades.csv"),index=False)
+            print(save_report(report, args.output))
+            return
         if args.compare or args.compare_experiments:
             if args.contract_value is None or args.contract_value <= 0:
                 parser.error("--compare requires --contract-value")

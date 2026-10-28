@@ -36,12 +36,16 @@ class TradingEngine:
         self.repository = repository
         self.news_filter = news_filter
         self.signal_engine = SignalEngine(app_cfg)
+        self.profile_configs = {name: app_cfg.for_profile(name) for name in ("scalping", "intraday")
+            if app_cfg.get("profiles.enabled", False) and app_cfg.get(f"profiles.{name}.enabled", False)}
+        self.profile_engines = {name: SignalEngine(profile_cfg) for name, profile_cfg in self.profile_configs.items()}
         self.running = True
         self.stop_event = Event()
         self.resolver = SymbolResolver(client, app_cfg.symbols)
         self.position_manager = PositionManager(app_cfg.get("position_management", {}))
         self.resolved = {}
         self.frames_cache = {}
+        self.latest_entry_frames = {}
         self.quote_statuses = {}
         self.revision = config_revision(app_cfg)
         self.risk.symbols = app_cfg.symbols
@@ -111,18 +115,23 @@ class TradingEngine:
         # News polling also runs when every instrument has a closed/stale market.
         self.news_filter.refresh()
         candidates = []
+        profile_order = ([name for name in self.cfg.get("profiles.priority", ["intraday", "scalping"])
+            if name in self.profile_configs] if self.profile_configs else ["baseline"])
         for symbol in sorted(symbols):
             if not self.running:
                 break
-            try:
-                signal = self.process_symbol(symbol, submit=False)
-                if signal is not None and signal.direction != Direction.HOLD:
-                    candidates.append((symbol, signal))
-            except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
-                logger.warning("{} data/entry rejected: {}", symbol, exc)
-                self.record_unavailable(self.resolved.get(symbol,symbol),str(exc),reason_code(exc))
-        # All proposals exist before any entry. Ties are resolved by name, never scan order.
-        candidates.sort(key=lambda item: (-item[1].confidence, -(item[1].risk_reward or 0), item[1].symbol, item[1].strategy))
+            for profile in profile_order:
+                try:
+                    signal = self.process_symbol(symbol, submit=False, profile_name=profile)
+                    if signal is not None and signal.direction != Direction.HOLD:
+                        candidates.append((symbol, signal))
+                except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
+                    logger.warning("{} profile={} data/entry rejected: {}", symbol, profile, exc)
+                    self.record_unavailable(self.resolved.get(symbol,symbol),str(exc),reason_code(exc),profile=profile)
+        # Profile capacity/priority is an operational allocation, not a comparison
+        # of uncalibrated score or expected return across timeframes.
+        candidates.sort(key=lambda item: (profile_order.index(item[1].meta.get("profile", "baseline")),
+            -item[1].confidence, -(item[1].risk_reward or 0), item[1].symbol, item[1].strategy))
         for logical, signal in candidates:
             if not self.running:
                 break
@@ -155,9 +164,11 @@ class TradingEngine:
                   "updated_at": datetime.now(timezone.utc).isoformat()}
         if reason:
             result.update(direction="HOLD", reason=reason)
-        analysis = self.repository.get_state("analysis:" + result["symbol"], {})
+        profile = result.get("profile", "baseline")
+        analysis_key = "analysis:" + result["symbol"] + (":" + profile if profile != "baseline" else "")
+        analysis = self.repository.get_state(analysis_key, {})
         self.repository.record_decisions(self.execution.scope,[result],states={
-            self.execution.scope+":decision":result,"analysis:"+result["symbol"]:{**analysis,**result}})
+            self.execution.scope+":decision":result,analysis_key:{**analysis,**result}})
         if stage in {"risk","execution"}:
             waiting = result["reason_code"] if result["reason_code"] in {"LOSS_PAUSE","LOSS_LIMIT","DAILY_COUNT","KILL_SWITCH"} else None
             self.track_wait(result["symbol"],"risk",waiting)
@@ -184,13 +195,17 @@ class TradingEngine:
         decision={"symbol":symbol,"direction":"HOLD","reason":reason,"reason_code":code,
             "stage":"availability","updated_at":self.risk.clock().isoformat(),**extra}
         self.repository.set_state(self.execution.scope+":decision",decision)
-        analysis=self.repository.get_state("analysis:"+symbol,{})
-        self.repository.set_state("analysis:"+symbol,{**analysis,**decision})
+        profile=extra.get("profile", "baseline")
+        analysis_key="analysis:"+symbol+(":"+profile if profile!="baseline" else "")
+        analysis=self.repository.get_state(analysis_key,{})
+        self.repository.set_state(analysis_key,{**analysis,**decision})
 
-    def process_symbol(self, logical_symbol: str, submit=True):
+    def process_symbol(self, logical_symbol: str, submit=True, profile_name="baseline"):
+        cfg = self.profile_configs.get(profile_name, self.cfg)
+        signal_engine = self.profile_engines.get(profile_name, self.signal_engine)
         if self.execution.kill_switch_path.exists():
             logger.warning("Kill switch active")
-            self.record_unavailable(self.resolved.get(logical_symbol,logical_symbol),"Kill switch active","KILL_SWITCH")
+            self.record_unavailable(self.resolved.get(logical_symbol,logical_symbol),"Kill switch active","KILL_SWITCH",profile=profile_name)
             return None
         if logical_symbol not in self.resolved:
             self.resolved[logical_symbol] = self.resolver.resolve(logical_symbol)
@@ -199,20 +214,25 @@ class TradingEngine:
         self.quote_statuses[symbol] = quote_status
         self.feed.log_tick_status(quote_status)
         if not quote_status["fresh"]:
-            self.record_unavailable(symbol,quote_status["reason"],quote_status["status"],quote_status=quote_status["status"])
+            self.record_unavailable(symbol,quote_status["reason"],quote_status["status"],quote_status=quote_status["status"],profile=profile_name)
             return None
-        frames = self.load_frames(symbol)
+        frames = self.load_frames(symbol, cfg) if profile_name != "baseline" else self.load_frames(symbol)
+        self.latest_entry_frames[(symbol, profile_name)] = frames["entry"]
         self.track_wait(symbol,"availability")
-        regime = detect_regime(frames["trend"], self.cfg.get("strategy.filters", {}))
+        regime = detect_regime(frames["trend"], cfg.get("strategy.filters", {}))
         structure = analyze_structure(frames["setup"])
-        volume = analyze_volume(frames["setup"], self.cfg.get("strategy.indicators", {}))
+        volume = analyze_volume(frames["setup"], cfg.get("strategy.indicators", {}))
         news_ok, news_reason, news_score = self.news_filter.evaluate(logical_symbol)
         historical = list(frames["entry"].get("spread", []))[-100:]
-        spread_status=self.feed.spread_status(symbol,historical,float(self.cfg.get("strategy.filters.max_spread_multiplier",2)),
-            float(self.risk.policy(symbol).get("max_spread_points",40)))
+        spread_status=self.feed.spread_status(symbol,historical,float(cfg.get("strategy.filters.max_spread_multiplier",2)),
+            min(float(self.risk.policy(symbol).get("max_spread_points",40)),float(cfg.get("trading.max_spread_points",40))))
         spread,spread_ok=spread_status["points"],spread_status["allowed"]
-        context = pricing_context(self.client,symbol,self.risk.policy(symbol))
-        signal = self.signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
+        policy = {**self.risk.policy(symbol),
+            "slippage_points":max(float(self.risk.policy(symbol).get("slippage_points",0)),float(cfg.get("trading.slippage_points",0))),
+            "commission_per_lot":max(float(self.risk.policy(symbol).get("commission_per_lot",0)),float(cfg.get("trading.commission_per_lot",0))),
+            "max_spread_points":min(float(self.risk.policy(symbol).get("max_spread_points",40)),float(cfg.get("trading.max_spread_points",40)))}
+        context = pricing_context(self.client,symbol,policy)
+        signal = signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
         if not news_ok and signal.direction!=Direction.HOLD:
             signal.direction=Direction.HOLD
             signal.stop_loss=signal.take_profit=signal.risk_reward=None
@@ -231,22 +251,35 @@ class TradingEngine:
         new_signal = self.repository.save_signal(signal)
         candle = signal.candle_time or frames["entry"].time.iloc[-1]
         candle_datetime = candle.to_pydatetime() if hasattr(candle,"to_pydatetime") else candle
-        seconds = {"M1":60,"M5":300,"M15":900,"M30":1800,"H1":3600,"H4":14400,"D1":86400}[self.cfg.get("strategy.timeframes.entry","M5")]
-        decision = {"symbol": symbol, "direction": signal.direction.value, "score": signal.confidence, "candle": str(candle), "strategy":signal.strategy,
-                    "evaluation_id":evaluation_id(symbol, candle, signal.strategy, self.revision), "config_revision":self.revision,
+        seconds = {"M1":60,"M5":300,"M15":900,"M30":1800,"H1":3600,"H4":14400,"D1":86400}[cfg.get("strategy.timeframes.entry","M5")]
+        revision = signal.meta.get("config_revision", self.revision)
+        decision_identity = (profile_name + ":" if profile_name != "baseline" else "") + signal.strategy
+        decision = {"symbol": symbol, "profile": profile_name, "timeframe": signal.timeframe,
+                    "direction": signal.direction.value, "score": signal.confidence,
+                    "threshold": cfg.get("trading.min_confidence", .70), "candle": str(candle), "strategy":signal.strategy,
+                    "evaluation_id":evaluation_id(symbol, candle, decision_identity, revision), "config_revision":revision,
                     "regime":getattr(signal.market_regime,"value","UNCERTAIN"),
                     "session":", ".join(active_sessions(candle_datetime + timedelta(seconds=seconds))) or "closed",
                     "news":{"allowed":news_ok,"reason":news_reason},
                     "spread":spread_status,
-                    "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"), "reasons": signal.reasons}
+            "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"),
+            "candidate_plans":signal.meta.get("candidate_plans"),"reasons": signal.reasons}
         signal.meta["runtime_decision"] = decision
         assessments=[]
         for assessment in (signal.meta.get("selection") or {}).get("assessments", []):
             method = assessment["strategy"]
+            method_identity = (profile_name + ":" if profile_name != "baseline" else "") + method
             assessments.append({**decision, "strategy":method,
-                "evaluation_id":evaluation_id(symbol,candle,method,self.revision), "stage":"setup",
+                "evaluation_id":evaluation_id(symbol,candle,method_identity,revision), "stage":"setup",
                 "reason_code":"SETUP" if assessment["eligible"] else reason_code("; ".join(assessment["reasons"])),
                 "assessment":assessment})
+        for plan in signal.meta.get("candidate_plans", []):
+            method = plan["strategy"]
+            method_identity = (profile_name + ":" if profile_name != "baseline" else "") + method
+            assessments.append({**decision, "strategy":method, "score":plan["confidence"],
+                "evaluation_id":evaluation_id(symbol,candle,method_identity,revision), "stage":"plan",
+                "reason_code":"PLAN_READY" if plan["accepted"] else reason_code(plan["reason"]),
+                "reason":plan["reason"], "candidate_plan":plan})
         self.repository.record_decisions(self.execution.scope,assessments)
         if signal.direction == Direction.HOLD:
             blocked = signal.meta.get("reason_codes", [])
@@ -266,7 +299,8 @@ class TradingEngine:
 
     def correlation_matrix(self, exposure):
         import pandas as pd
-        closes = {symbol: df.set_index("time").close for (symbol, role), df in self.frames_cache.items() if role == "trend"}
+        trend_tf = self.cfg.get("strategy.timeframes.trend", "H1")
+        closes = {symbol: df.set_index("time").close for (symbol, tf, _, _), df in self.frames_cache.items() if tf == trend_tf}
         for symbol, _ in exposure:
             if symbol in closes:
                 continue
@@ -292,16 +326,19 @@ class TradingEngine:
         ok, reason, _ = self.news_filter.evaluate(logical or req.symbol)
         if not ok or not self.news_filter.direction_allowed(logical or req.symbol, req.direction.value):
             raise ValueError("News changed before order submission: " + reason)
-        frame = self.frames_cache.get((req.symbol, "entry"))
+        frame = self.latest_entry_frames.get((req.symbol, req.profile))
         history = list(frame.get("spread", []))[-100:] if frame is not None else []
-        spread=self.feed.spread_status(req.symbol,history,float(self.cfg.get("strategy.filters.max_spread_multiplier",2)),
-            float(self.risk.policy(req.symbol).get("max_spread_points",40)))
+        cfg = self.profile_configs.get(req.profile, self.cfg)
+        spread=self.feed.spread_status(req.symbol,history,float(cfg.get("strategy.filters.max_spread_multiplier",2)),
+            min(float(self.risk.policy(req.symbol).get("max_spread_points",40)),float(cfg.get("trading.max_spread_points",40))))
         if not spread["allowed"]:
             raise ValueError("Abnormal spread before order submission")
 
     def submit_signal(self, logical_symbol, signal):
         decision = signal.meta["runtime_decision"]
         symbol = signal.symbol
+        profile = signal.meta.get("profile", "baseline")
+        profile_cfg = self.profile_configs.get(profile)
         self.risk.mode = self.execution.mode.value
         cooldown = self.repository.get_state(self.execution.scope + ":defensive_exit:" + symbol)
         if cooldown and datetime.now(timezone.utc) < datetime.fromisoformat(cooldown["until"]):
@@ -313,6 +350,11 @@ class TradingEngine:
         equity = float(account.equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()
         exposure, positions, orders = self.risk.account_exposure()
         simulated = self.execution.paper_positions() if self.execution.mode == TradingMode.PAPER else []
+        if profile_cfg is not None:
+            capacity = int(profile_cfg.get("profile.max_open_positions", 1))
+            if sum(p.get("profile", "baseline") == profile for p in simulated) >= capacity:
+                self.record_decision(decision,"risk","Profile position capacity reached","PROFILE_CAPACITY")
+                return signal
         exposure += sum(p["risk"] for p in simulated)
         if any(p.symbol==symbol for p in [*positions,*orders]) or any(p["symbol"]==symbol for p in simulated):
             self.record_decision(decision,"risk","Existing symbol exposure; duplicate entry blocked","DUPLICATE")
@@ -327,6 +369,11 @@ class TradingEngine:
             self.record_decision(decision, "risk", "Symbol specification unavailable")
             return signal
         lot = self.risk.calculate_volume(symbol, signal.entry_price, signal.stop_loss, equity, info, exposure, signal.direction)
+        if profile_cfg is not None and lot > 0:
+            profile_fraction = min(float(profile_cfg.get("trading.risk_per_trade", .005)),
+                float(self.cfg.get("trading.risk_per_trade", .005)))
+            loss_per_lot = self.risk.loss_per_lot(symbol, signal.entry_price, signal.stop_loss, info, signal.direction)
+            lot = min(lot, self.risk._floor_step(equity * profile_fraction / loss_per_lot, float(info.volume_step)))
         if lot <= 0:
             logger.warning("{} rejected: calculated volume below broker minimum", symbol)
             self.record_decision(decision, "risk", "Calculated volume below broker minimum", "MIN_LOT")
@@ -335,6 +382,7 @@ class TradingEngine:
         price = float(tick.ask if signal.direction == Direction.BUY else tick.bid)
         req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.risk.policy(symbol).get("max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
         req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
+        req.profile = profile
         if not self.running:
             return signal
         # A new snapshot may have arrived while sizing/preparing this entry.
@@ -355,44 +403,57 @@ class TradingEngine:
         logger.info("{} {} confidence={:.2f} result={}", symbol, signal.direction.value, signal.confidence, result.message)
         return signal
 
-    def load_frames(self, symbol):
+    def load_frames(self, symbol, cfg=None):
+        cfg = cfg or self.cfg
         frames = {}
-        for role, tf in self.cfg.get("strategy.timeframes", {}).items():
-            df = self.feed.bars(symbol, tf, int(self.cfg.get("trading.default_bars", 700)),allow_session_gaps=role!="entry")
+        indicator_key = json.dumps(cfg.get("strategy.indicators", {}), sort_keys=True)
+        for role, tf in cfg.get("strategy.timeframes", {}).items():
+            df = self.feed.bars(symbol, tf, int(cfg.get("trading.default_bars", 700)),allow_session_gaps=role!="entry")
             if df.empty:
                 raise ValueError(f"{symbol}: no {tf} data")
-            cached = self.frames_cache.get((symbol, role))
+            key = (symbol, tf, indicator_key, role != "entry")
+            cached = self.frames_cache.get(key)
             if cached is not None and cached.time.iloc[-1] == df.time.iloc[-1] and cached.close.iloc[-1] == df.close.iloc[-1]:
                 frames[role] = cached
             else:
-                frames[role] = add_indicators(df, self.cfg.get("strategy.indicators", {}))
-                self.frames_cache[(symbol, role)] = frames[role]
+                frames[role] = add_indicators(df, cfg.get("strategy.indicators", {}))
+                self.frames_cache[key] = frames[role]
         return frames
 
     def position_decision(self, symbol, direction, entry, current, sl, meta, frames):
+        profile = meta.get("profile", "baseline")
+        profile_cfg = self.profile_configs.get(profile)
+        manager = (PositionManager(profile_cfg.get("position_management", {}))
+            if profile_cfg is not None else self.position_manager)
+        maximum = profile_cfg.get("position_management.max_holding_minutes") if profile_cfg else None
+        if maximum and meta.get("created"):
+            if datetime.now(timezone.utc) - datetime.fromisoformat(meta["created"]) >= timedelta(minutes=float(maximum)):
+                from core.position_manager import PositionDecision
+                return PositionDecision(close=True, reason="Profile maximum holding time reached")
         # The price-based safety exit must work even if chart data is unavailable.
-        decision = self.position_manager.decide(direction, entry, current, sl, meta["initial_risk"])
+        decision = manager.decide(direction, entry, current, sl, meta["initial_risk"])
         if decision.close:
             return decision
         if symbol not in frames:
             try:
-                frames[symbol] = self.load_frames(symbol)
+                frames[symbol] = self.load_frames(symbol, profile_cfg or self.cfg)
             except (MT5Error, ValueError, TimeoutError, ConnectionError) as exc:
                 logger.warning("{} position analysis unavailable: {}", symbol, exc)
                 frames[symbol] = {}
         chart = frames[symbol]
-        reason = self.position_manager.invalidation_reason(direction, chart, meta.get("created"))
+        reason = manager.invalidation_reason(direction, chart, meta.get("created"))
         atr = float(chart["entry"].atr.iloc[-1]) if "entry" in chart and "atr" in chart["entry"] else None
-        return self.position_manager.decide(direction, entry, current, sl, meta["initial_risk"], atr,
+        return manager.decide(direction, entry, current, sl, meta["initial_risk"], atr,
             meta.get("partial_done", False) or meta.get("partial_state") is not None, invalidation_reason=reason)
 
-    def record_position_exit(self, symbol, ticket, reason):
+    def record_position_exit(self, symbol, ticket, reason, profile="baseline"):
         self.repository.set_state(self.execution.scope + ":position_management", {
-            "symbol": symbol, "ticket": int(ticket), "action": "CLOSE", "reason": reason,
+            "symbol": symbol, "ticket": int(ticket), "profile": profile, "action": "CLOSE", "reason": reason,
             "time": datetime.now(timezone.utc).isoformat()})
         if reason not in {"Stop loss", "Take profit"}:
+            cfg = self.profile_configs.get(profile, self.cfg)
             until = datetime.now(timezone.utc) + timedelta(
-                seconds=float(self.cfg.get("position_management.defensive_exit_cooldown_seconds", 900)))
+                seconds=float(cfg.get("position_management.defensive_exit_cooldown_seconds", 900)))
             self.repository.set_state(self.execution.scope + ":defensive_exit:" + symbol, {
                 "until": until.isoformat(), "reason": reason, "ticket": int(ticket)})
         logger.warning("Position exit ticket={} symbol={} reason={}", ticket, symbol, reason)
@@ -422,7 +483,7 @@ class TradingEngine:
                     state = self.risk.closed_state(profit + p.get("partial_realized", 0))
                     if self.repository.settle_paper(p["key"], self.execution.scope, p["ticket"], exit_price, profit, reason=reason, risk_state=state):
                         self.risk.state = state
-                    self.record_position_exit(p["symbol"], p["ticket"], reason)
+                    self.record_position_exit(p["symbol"], p["ticket"], reason, p.get("profile", "baseline"))
                     self.persist_risk()
                     continue
                 if decision.partial_close_fraction:

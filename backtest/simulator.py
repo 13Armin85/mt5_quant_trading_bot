@@ -12,7 +12,8 @@ class BacktestEngine:
     def __init__(self, initial_equity=10000, spread=0., commission_per_lot=0., slippage=0.,
                  risk_fraction=.01, volume_step=.01, volume_min=.01, volume_max=100,
                  tick_size=None, minimum_net_rr=0, max_total_risk=.01, max_positions=3,
-                 max_trades_per_day=10, risk_limits=None, position_management=None, symbol_costs=None, symbols=None):
+                 max_trades_per_day=10, risk_limits=None, position_management=None, symbol_costs=None, symbols=None,
+                 profile_priority=None, profile_configs=None):
         values = (initial_equity, spread, commission_per_lot, slippage, risk_fraction,
                   max_total_risk, volume_step, volume_min, volume_max, minimum_net_rr)
         if (not all(math.isfinite(v) for v in values) or initial_equity <= 0
@@ -35,6 +36,10 @@ class BacktestEngine:
             "risk_per_trade": risk_fraction, "max_total_risk": max_total_risk,
             "max_trades_per_day": max_trades_per_day}
         self.manager = PositionManager(position_management or {})
+        self.profile_priority = profile_priority or ["baseline", "intraday", "scalping"]
+        self.profile_configs = profile_configs or {}
+        self.profile_managers = {name:PositionManager(value.get("position_management", {}))
+            for name,value in self.profile_configs.items()}
         self.symbol_costs = symbol_costs or {}
         allowed_costs = {"spread","slippage","commission_per_lot","volume_step","volume_min","volume_max","tick_size"}
         if not isinstance(self.symbol_costs,dict) or any(not isinstance(v,dict) or set(v)-allowed_costs for v in self.symbol_costs.values()):
@@ -140,7 +145,8 @@ class BacktestEngine:
             total = profit + position["partial_profit"]
             risk.register_closed_trade(total)
             trades.append({"signal_time":position["signal_time"], "entry_time":position["entry_time"],
-                "exit_time":timestamp, "symbol":position["symbol"], "strategy":position["strategy"],
+                "exit_time":timestamp, "symbol":position["symbol"], "profile":position["profile"],
+                "strategy":position["strategy"],
                 "regime":position["regime"], "session":position["session"], "direction":position["direction"],
                 "entry":position["entry"], "exit":price, "volume":position["initial_volume"],
                 "risk":position["initial_risk_cash"], "profit":total, "r":total/position["initial_risk_cash"],
@@ -163,9 +169,15 @@ class BacktestEngine:
                     close(p,p["tp"]-p["sign"]*p["costs"]["slippage"],timestamp,"TP")
             if equity()>0:
                 risk.roll_state(equity())
-            proposals = sorted(entries.get(timestamp,[]),key=lambda s:(-float(s.get("confidence",0)),
+            proposals = sorted(entries.get(timestamp,[]),key=lambda s:(
+                self.profile_priority.index(s.get("profile","baseline")) if s.get("profile","baseline") in self.profile_priority else len(self.profile_priority),
+                -float(s.get("confidence",0)),
                 -float(s.get("net_rr",0)),s["symbol"],str(s.get("strategy","baseline"))))
             for s in proposals:
+                profile = s.get("profile", "baseline")
+                capacity = self.profile_configs.get(profile, {}).get("max_open_positions")
+                if capacity is not None and sum(p["profile"] == profile for p in opened) >= int(capacity):
+                    self.reject(s,"Profile position capacity reached", "PROFILE_CAPACITY"); continue
                 symbol, buy = s["symbol"], s["direction"] == "BUY"
                 costs = self.costs(symbol)
                 sign = 1 if buy else -1
@@ -208,7 +220,8 @@ class BacktestEngine:
                 opened.append(dict(symbol=symbol,direction=s["direction"],sign=sign,entry=entry,
                     sl=sl,tp=tp,value=value,volume=volume,initial_volume=volume,costs=costs,
                     initial_distance=abs(entry-sl),initial_risk_cash=reserved,reserved_risk=reserved,
-                    entry_time=timestamp,signal_time=s["time"],strategy=s.get("strategy","baseline"),
+                    entry_time=timestamp,signal_time=s["time"],profile=profile,
+                    strategy=s.get("strategy","baseline"),
                     regime=s.get("regime","UNCERTAIN"),session=s.get("session","unknown"),
                     partial_done=False,partial_profit=0.,mae=0.,mfe=0.,ambiguous=False))
                 risk.state.trades_today += 1
@@ -234,7 +247,13 @@ class BacktestEngine:
                 p["mae"], p["mfe"] = max(p["mae"],adverse),max(p["mfe"],favorable)
                 mark = self.liquidation(p,float(row.close))
                 atr = float(row.atr) if pd.notna(row.atr) else None
-                decision = self.manager.decide(p["direction"],p["entry"],mark,p["sl"],p["initial_distance"],atr,p["partial_done"])
+                profile_cfg = self.profile_configs.get(p["profile"], {})
+                maximum = profile_cfg.get("position_management", {}).get("max_holding_minutes")
+                if maximum and timestamp - p["entry_time"] >= pd.Timedelta(minutes=float(maximum)):
+                    close(p,mark-p["sign"]*p["costs"]["slippage"],timestamp,"PROFILE_MAX_HOLD")
+                    continue
+                manager = self.profile_managers.get(p["profile"], self.manager)
+                decision = manager.decide(p["direction"],p["entry"],mark,p["sl"],p["initial_distance"],atr,p["partial_done"])
                 if decision.close:
                     close(p,mark-p["sign"]*p["costs"]["slippage"],timestamp,decision.reason)
                 elif decision.partial_close_fraction:

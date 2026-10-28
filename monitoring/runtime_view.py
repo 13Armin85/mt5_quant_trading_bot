@@ -19,4 +19,12 @@ def read_runtime(database_url):
         states = {r["key"]:json.loads(r["payload"]) for r in db.execute(
             "SELECT key,payload FROM runtime_state WHERE key='heartbeat' OR key LIKE 'analysis:%'")}
         trades = [dict(r) for r in db.execute("SELECT symbol,direction,confidence,market_regime,lot,status,timestamp,reason FROM trades ORDER BY id DESC LIMIT 100")]
-    return {"heartbeat":states.get("heartbeat"),"analyses":[v for k,v in states.items() if k.startswith("analysis:")],"trades":trades}
+        positions = []
+        scope = (states.get("heartbeat") or {}).get("scope")
+        if scope:
+            for row in db.execute("SELECT status,payload FROM execution_attempts WHERE key LIKE ? AND status IN ('OPEN','PARTIAL','PAPER_OPEN')", (scope + ":%",)):
+                payload = json.loads(row["payload"])
+                positions.append({"symbol":payload.get("symbol"),"profile":payload.get("profile","baseline"),
+                    "direction":payload.get("direction"),"ticket":payload.get("ticket"),"status":row["status"]})
+    return {"heartbeat":states.get("heartbeat"),"analyses":[v for k,v in states.items() if k.startswith("analysis:")],
+        "trades":trades,"positions":positions}

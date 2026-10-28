@@ -22,13 +22,14 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None, cost
     DataFeed.validate_bars(bars)
     if "symbol" in bars and bars.symbol.nunique()!=1:
         raise ValueError("Generate signals per instrument, then combine symbol-tagged bars/signals for portfolio simulation")
+    original_symbol = str(bars.symbol.iloc[0]) if "symbol" in bars else "__single__"
     settings = deepcopy(cfg.settings)
     settings["strategy"]["family"] = family
     if stop_multiple is not None:
         settings["strategy"]["stop_atr_multiple"] = stop_multiple
     local = AppConfig(settings=settings, symbols=cfg.symbols, strategy=cfg.strategy, env=cfg.env)
     costs = costs or {}
-    cost_symbol = str(bars.symbol.iloc[0]) if "symbol" in bars else "__single__"
+    cost_symbol = original_symbol
     costs = {**costs, **costs.get("symbol_costs",{}).get(cost_symbol,{})}
     market_context = {"contract_value_per_price":contract_value,"spread_price":float(costs.get("spread",0)),
                       "tick_size":float(costs.get("tick_size") or 0),
@@ -37,8 +38,20 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None, cost
     tfs = local.get("strategy.timeframes")
     step = TF[tfs["entry"]]
     diffs = bars.time.diff().dropna().dt.total_seconds()
-    if diffs.empty or diffs.min() != step or any(diffs % step):
-        raise ValueError("CSV must use configured entry timeframe or a slower strategy entry must be configured")
+    source_step = diffs.min() if not diffs.empty else 0
+    if not source_step or source_step > step or step % source_step or any(diffs % source_step):
+        raise ValueError("CSV timeframe must divide the profile entry timeframe")
+    if source_step < step:
+        source = bars.set_index("time")
+        source.index = source.index.tz_convert(cfg.get("trading.mt5_time_zone", "UTC"))
+        agg = {"open":"first", "high":"max", "low":"min", "close":"last"}
+        agg.update({k:"sum" for k in ("tick_volume","real_volume") if k in source})
+        if "spread" in source:
+            agg["spread"] = "median"
+        grouped = source.resample(f"{step}s", closed="left", label="left")
+        counts = grouped.close.count()
+        bars = grouped.agg(agg).loc[counts.eq(step/source_step)].reset_index()
+        bars["time"] = pd.to_datetime(bars.time, utc=True)
     all_frames = {}
     indexed = bars.set_index("time")
     indexed.index = indexed.index.tz_convert(cfg.get("trading.mt5_time_zone", "UTC"))
@@ -67,7 +80,7 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None, cost
         regime = detect_regime(frames["trend"], local.get("strategy.filters", {}))
         structure = analyze_structure(frames["setup"])
         volume = analyze_volume(frames["setup"], local.get("strategy.indicators", {}))
-        identity_symbol = str(bars.symbol.iloc[0]) if "symbol" in bars else "research"
+        identity_symbol = original_symbol if original_symbol != "__single__" else "research"
         signal = engine.generate(identity_symbol, frames, regime, structure, volume, True,
                                  "Historical news not supplied; technical-only research", .5, 0,market_context)
         if signal.direction == Direction.HOLD:
@@ -78,11 +91,12 @@ def generate_signals(bars, cfg, contract_value, family, stop_multiple=None, cost
                        "session":", ".join(active_sessions(now.to_pydatetime())) or "closed",
                        "entry": signal.entry_price, "sl": signal.stop_loss, "tp": signal.take_profit,
                        "contract_value_per_price": contract_value, "signal_id": signal.signal_id,
+                       "profile":signal.meta.get("profile","baseline"),
                        "minimum_net_rr":signal.meta["trade_plan"]["minimum_net_rr"]})
     # The input single-instrument CSV has no symbol column; keep the simulation key consistent.
     for row in result:
-        row["symbol"] = str(bars.symbol.iloc[0]) if "symbol" in bars else "__single__"
-    return pd.DataFrame(result, columns=["time", "available_at", "symbol", "strategy", "confidence", "regime", "session", "net_rr", "direction", "entry", "sl", "tp", "contract_value_per_price", "signal_id","minimum_net_rr"])
+        row["symbol"] = original_symbol
+    return pd.DataFrame(result, columns=["time", "available_at", "symbol", "profile", "strategy", "confidence", "regime", "session", "net_rr", "direction", "entry", "sl", "tp", "contract_value_per_price", "signal_id","minimum_net_rr"])
 
 
 def compare_strategies(bars, cfg, contract_value, engine_kwargs):

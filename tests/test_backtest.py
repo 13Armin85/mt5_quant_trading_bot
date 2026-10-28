@@ -70,3 +70,26 @@ def test_unsorted_bars_rejected():
     bars=data().iloc[::-1]
     with pytest.raises(ValueError,match="ordered"):
         BacktestEngine().run(bars,signals(data()))
+
+
+def test_shared_portfolio_uses_profile_priority_not_cross_profile_raw_score():
+    bars=data()
+    intraday=signals(bars); intraday["profile"]="intraday"; intraday["confidence"]=.7
+    intraday["signal_id"]="intra"
+    scalping=intraday.copy(); scalping["profile"]="scalping"; scalping["confidence"]=.9
+    scalping["signal_id"]="scalp"
+    engine=BacktestEngine(profile_priority=["intraday","scalping"],
+        profile_configs={"intraday":{"max_open_positions":1},"scalping":{"max_open_positions":1}})
+    trades,_=engine.run(bars,pd.concat([scalping,intraday],ignore_index=True))
+    assert len(trades)==1 and trades.iloc[0].profile=="intraday"
+    assert any(row["reason_code"] in {"TOTAL_RISK","DUPLICATE"} for row in engine.rejections)
+
+
+def test_profile_max_holding_exits_after_target_time_only_at_maximum():
+    bars=data(); bars[["high","low"]]=[100.2,99.8]
+    ss=signals(bars); ss["profile"]="scalping"; ss["sl"]=90; ss["tp"]=120
+    engine=BacktestEngine(profile_configs={"scalping":{"max_open_positions":1,
+        "position_management":{"target_holding_minutes":20,"max_holding_minutes":30}}})
+    trades,_=engine.run(bars,ss)
+    assert len(trades)==1 and trades.iloc[0].outcome=="PROFILE_MAX_HOLD"
+    assert trades.iloc[0].exit_time==bars.time.iloc[2]

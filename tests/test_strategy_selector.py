@@ -81,11 +81,71 @@ def test_opposing_qualified_rules_abstain_even_with_majority():
     assert result.direction==Direction.HOLD and "Conflicting" in result.reason
 
 
-def test_highest_scoring_candidate_wins_with_group_average():
+def test_highest_scoring_candidate_wins_with_bounded_independent_confirmation():
     result=select_assessments([assessment("b","momentum",score=.8),assessment("a","trend",score=.9)])
     assert result.strategy=="a" and result.direction==Direction.BUY
-    assert result.score==pytest.approx(.85)
+    assert result.score==pytest.approx(.908)
     assert result.groups==["momentum","trend"]
+
+
+def test_independent_confirmation_never_lowers_score_or_depends_on_order():
+    strongest=assessment("a","trend",score=.9)
+    weaker=assessment("b","breakout",score=.7)
+    correlated=assessment("c","trend",score=.8)
+    first=select_assessments([strongest,weaker,correlated])
+    reverse=select_assessments([correlated,weaker,strongest])
+    assert first.score==reverse.score>=select_assessments([strongest]).score
+    assert first.groups==["breakout","trend"]
+    assert select_assessments([strongest,correlated]).score==strongest.score
+
+
+def test_experimental_conflict_requires_clear_margin_and_is_symmetric():
+    buy=assessment("buy","trend",Direction.BUY,.91)
+    sell=assessment("sell","breakout",Direction.SELL,.68)
+    assert select_assessments([buy,sell]).direction==Direction.HOLD
+    assert select_assessments([sell,buy],conflict_policy="quality_margin",conflict_quality_margin=.20).direction==Direction.BUY
+    assert select_assessments([buy,sell],conflict_policy="quality_margin",conflict_quality_margin=.25).direction==Direction.HOLD
+    reverse=[assessment("buy","trend",Direction.SELL,.91),assessment("sell","breakout",Direction.BUY,.68)]
+    assert select_assessments(reverse,conflict_policy="quality_margin",conflict_quality_margin=.20).direction==Direction.SELL
+
+
+def test_next_executable_strategy_owns_trade_plan_and_metadata(monkeypatch):
+    from signals.selector import Selection
+    from signals.trade_plan import TradePlan
+    cfg=load_config().model_copy(deep=True)
+    cfg.settings["trading"]["min_confidence"]=.01
+    entries=[assessment("trend_pullback","trend",score=.90),assessment("momentum","momentum",score=.82)]
+    monkeypatch.setattr("signals.signal_engine.select_strategy",lambda *a:Selection(Direction.BUY,"trend_pullback",.90,"fixture",["trend"],entries))
+    def plan(frames,direction,regime,strategy,cfg,context):
+        if strategy=="momentum":
+            return TradePlan(True,"BUY",entry=100.5,sl=99.5,tp=102.5,net_rr=2,reason="Executable")
+        return TradePlan(False,"BUY",reason="No target meets minimum net reward/risk")
+    monkeypatch.setattr("signals.signal_engine.build_trade_plan",plan)
+    result=SignalEngine(cfg).generate("EURUSD_o",frames_for("trend_pullback"),MarketRegime.TRENDING_BULLISH,
+        {"direction":"BULLISH","score":.8,"reasons":[]},{"score":.7,"reasons":[]},True,"no event",.5,20)
+    assert result.direction==Direction.BUY and result.strategy=="momentum"
+    assert (result.entry_price,result.stop_loss,result.take_profit)==(100.5,99.5,102.5)
+    assert result.meta["selection"]["strategy"]=="momentum"
+    assert result.meta["candidate_plans"][0]["accepted"] is False
+
+
+def test_profile_signal_ids_and_metadata_are_distinct_on_same_candle():
+    cfg=load_config().model_copy(deep=True)
+    frames=frames_for("trend_pullback")
+    arguments=("EURUSD_o",frames,MarketRegime.TRENDING_BULLISH,
+        {"direction":"BULLISH","score":.8,"reasons":[]},{"score":.7,"reasons":[]},True,"no event",.5,20)
+    scalp=SignalEngine(cfg.for_profile("scalping")).generate(*arguments)
+    intra=SignalEngine(cfg.for_profile("intraday")).generate(*arguments)
+    assert scalp.signal_id!=intra.signal_id
+    assert (scalp.meta["profile"],scalp.timeframe)==("scalping","M1")
+    assert (intra.meta["profile"],intra.timeframe)==("intraday","M5")
+
+
+def test_balanced_reuses_existing_h1_context_rule():
+    frames=frames_for("trend_pullback")
+    one=strategy_direction(frames,MarketRegime.TRENDING_BULLISH,"trend_pullback",options={"experiment":"h1_context"})
+    other=strategy_direction(frames,MarketRegime.TRENDING_BULLISH,"trend_pullback",options={"experiment":"balanced"})
+    assert one==other
 
 
 def test_selector_evaluates_every_enabled_strategy_and_disabled_reasons():
@@ -162,9 +222,9 @@ def test_changing_winning_rule_on_same_bar_does_not_create_new_ensemble_signal_i
     def generate():
         return engine.generate("EURUSD_o",frames,MarketRegime.TRENDING_BULLISH,
             {"direction":"BULLISH","score":.8,"reasons":[]},{"score":.7,"reasons":[]},True,"no event",.5,20)
-    monkeypatch.setattr("signals.signal_engine.select_strategy",lambda *a:Selection(Direction.BUY,"trend_pullback",.8,"fixture",["trend"],[]))
+    monkeypatch.setattr("signals.signal_engine.select_strategy",lambda *a:Selection(Direction.BUY,"trend_pullback",.8,"fixture",["trend"],[assessment("trend_pullback","trend")]))
     first=generate()
-    monkeypatch.setattr("signals.signal_engine.select_strategy",lambda *a:Selection(Direction.BUY,"momentum",.8,"fixture",["momentum"],[]))
+    monkeypatch.setattr("signals.signal_engine.select_strategy",lambda *a:Selection(Direction.BUY,"momentum",.8,"fixture",["momentum"],[assessment("momentum","momentum")]))
     second=generate()
     assert first.direction==second.direction==Direction.BUY
     assert first.strategy!=second.strategy and first.signal_id==second.signal_id

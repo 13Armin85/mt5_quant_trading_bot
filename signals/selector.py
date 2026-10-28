@@ -116,20 +116,32 @@ def assess_strategies(frames, regime, cfg, structure):
     return results
 
 
-def select_assessments(assessments, minimum_score=.65, minimum_groups=1):
+def select_assessments(assessments, minimum_score=.65, minimum_groups=1,
+                       conflict_policy="strict", conflict_quality_margin=.20):
     candidates = [a for a in assessments if a.eligible and a.direction != Direction.HOLD and math.isfinite(a.score) and a.score >= minimum_score]
     if not candidates:
         return Selection(Direction.HOLD,"ensemble",0,"No eligible setup meets the selection score",[],assessments)
     directions = {a.direction for a in candidates}
     if len(directions)>1:
-        return Selection(Direction.HOLD,"ensemble",0,"Conflicting BUY/SELL setups; abstaining",[],assessments)
+        if conflict_policy != "quality_margin":
+            return Selection(Direction.HOLD,"ensemble",0,"Conflicting BUY/SELL setups; abstaining",[],assessments)
+        best_by_side = {side:max(a.score for a in candidates if a.direction == side) for side in directions}
+        winner = max(best_by_side, key=lambda side:best_by_side[side])
+        loser = next(side for side in directions if side != winner)
+        winner_groups = {a.group for a in candidates if a.direction == winner}
+        if (best_by_side[winner] - best_by_side[loser] < conflict_quality_margin
+                or len(winner_groups) < minimum_groups):
+            return Selection(Direction.HOLD,"ensemble",0,"Conflicting BUY/SELL quality too close; abstaining",[],assessments)
+        candidates = [a for a in candidates if a.direction == winner]
     representatives = {}
     for candidate in sorted(candidates,key=lambda a:(-a.score,a.strategy)):
         representatives.setdefault(candidate.group,candidate)
     if len(representatives)<minimum_groups:
         return Selection(Direction.HOLD,"ensemble",0,"Insufficient independent strategy groups",list(representatives),assessments)
     best = min(representatives.values(),key=lambda a:(-a.score,a.strategy))
-    score = mean(a.score for a in representatives.values())
+    # The strongest independent setup sets the floor. Each further independent
+    # group adds a small capped confirmation; a weaker setup cannot lower it.
+    score = min(1.0, best.score + (1.0-best.score)*min(.20, .08*(len(representatives)-1)))
     return Selection(best.direction,best.strategy,score,"Selected highest suitability setup; correlated rules counted once",sorted(representatives),assessments)
 
 
@@ -138,6 +150,8 @@ def select_strategy(frames, regime, cfg, structure):
     family = cfg.get("strategy.family","ensemble")
     considered = assessments if family in ("auto","ensemble") else [a for a in assessments if a.strategy==family]
     result = select_assessments(considered,float(cfg.get("strategy.selection.minimum_score",.65)),
-        int(cfg.get("strategy.selection.minimum_groups",1)) if family in ("auto","ensemble") else 1)
+        int(cfg.get("strategy.selection.minimum_groups",1)) if family in ("auto","ensemble") else 1,
+        cfg.get("strategy.selection.conflict_policy","strict"),
+        float(cfg.get("strategy.selection.conflict_quality_margin",.20)))
     result.assessments = assessments
     return result

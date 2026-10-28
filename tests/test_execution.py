@@ -177,3 +177,62 @@ def test_equity_change_during_check_cannot_exceed_budget(live_engine, broker, mo
     monkeypatch.setattr(broker,"order_check",check)
     assert not live_engine.execute(request()).success
     assert not broker.sent
+
+
+def test_small_quote_change_rechecks_and_keeps_original_risk_ceiling(live_engine, broker, monkeypatch):
+    checks=[]
+    original=broker.order_check
+    def check(req):
+        checks.append(req.copy())
+        if len(checks)==1:
+            broker.quote.ask += .00005
+            broker.quote.bid += .00005
+        return original(req)
+    monkeypatch.setattr(broker,"order_check",check)
+    result=live_engine.execute(request())
+    assert result.success and len(checks)==2 and len(broker.sent)==1
+    assert broker.sent[0]["price"]==checks[1]["price"]==pytest.approx(1.10005)
+    assert broker.sent[0]["volume"]<=checks[0]["volume"]
+    assert result.planned_risk<=100
+
+
+def test_sell_quote_change_uses_bid_and_same_risk_ceiling(live_engine, broker, monkeypatch):
+    checks=[]
+    original=broker.order_check
+    def check(req):
+        checks.append(req.copy())
+        if len(checks)==1:
+            broker.quote.bid -= .00005
+            broker.quote.ask -= .00005
+        return original(req)
+    monkeypatch.setattr(broker,"order_check",check)
+    req=OrderRequest("EURUSD",Direction.SELL,.3,1.0998,1.101,1.096,20,signal_id="sell-reprice")
+    result=live_engine.execute(req)
+    assert result.success and len(checks)==2 and len(broker.sent)==1
+    assert broker.sent[0]["type"]==1 and broker.sent[0]["price"]==pytest.approx(1.09975)
+    assert result.planned_risk<=100
+
+
+def test_large_quote_change_abstains_without_send(live_engine, broker, monkeypatch):
+    original=broker.order_check
+    def check(req):
+        broker.quote.ask += .00025
+        broker.quote.bid += .00025
+        return original(req)
+    monkeypatch.setattr(broker,"order_check",check)
+    result=live_engine.execute(request())
+    assert not result.success and "deviation" in result.message
+    assert not broker.sent
+
+
+def test_second_check_quote_change_abstains_without_send(live_engine, broker, monkeypatch):
+    original=broker.order_check
+    calls=[]
+    def check(req):
+        calls.append(req.copy())
+        broker.quote.ask += .00001
+        broker.quote.bid += .00001
+        return original(req)
+    monkeypatch.setattr(broker,"order_check",check)
+    result=live_engine.execute(request())
+    assert len(calls)==2 and not result.success and not broker.sent
