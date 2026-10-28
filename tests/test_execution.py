@@ -32,6 +32,40 @@ def test_live_checks_broker_and_confirms_stop(live_engine, broker):
     assert len(broker.sent) == 1 and broker.sent[0]["type_filling"] == 0
 
 
+def test_live_uses_configured_strong_setup_risk_cap(live_engine, broker):
+    live_engine.risk.cfg["risk_per_trade"] = .005
+    live_engine.risk.cfg["quality_sizing"] = {"enabled": True, "risk_per_trade": .009}
+    req = request("strong-setup")
+    req.volume = 1.0
+    req.tp = 1.104
+    req.risk_fraction = .009
+    req.minimum_net_rr = 2.0
+    result = live_engine.execute(req)
+    assert result.success and 50 < result.planned_risk <= 90
+    assert broker.sent[0]["volume"] == result.filled_volume
+    payload = json.loads(live_engine.repo.attempts(live_engine.scope)[0].payload)
+    assert payload["risk_fraction"] == .009
+
+
+def test_live_rejects_risk_above_configured_ceiling(live_engine, broker):
+    live_engine.risk.cfg["risk_per_trade"] = .005
+    live_engine.risk.cfg["quality_sizing"] = {"enabled": True, "risk_per_trade": .009}
+    req = request("too-much-risk")
+    req.risk_fraction = .01
+    assert "ceiling" in live_engine.execute(req).message
+    assert not broker.sent
+
+
+def test_strong_setup_rechecks_higher_net_reward_risk_before_send(live_engine, broker):
+    live_engine.risk.cfg["risk_per_trade"] = .005
+    live_engine.risk.cfg["quality_sizing"] = {"enabled": True, "risk_per_trade": .009}
+    req = request("strong-rr-too-low")
+    req.risk_fraction = .009
+    req.minimum_net_rr = 2.0
+    assert "net reward/risk" in live_engine.execute(req).message
+    assert not broker.sent
+
+
 def test_duplicate_survives_restart(live_engine, broker):
     assert live_engine.execute(request()).success
     restarted = ExecutionEngine(broker, TradingMode.LIVE, True, str(live_engine.kill_switch_path), live_engine.risk, live_engine.repo, live_engine.cfg, live_engine.scope)

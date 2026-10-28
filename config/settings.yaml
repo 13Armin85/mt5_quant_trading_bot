@@ -3,6 +3,13 @@ trading:
   mode: PAPER
   poll_seconds: 2
   risk_per_trade: 0.005 # 0.5% of equity per qualified entry
+  quality_sizing:
+    enabled: true
+    risk_per_trade: 0.009 # Up to 0.9% for rare, independently confirmed setups
+    min_confidence: 0.85
+    min_suitability: 0.80
+    min_groups: 2
+    min_net_rr: 2.0
   max_total_risk: 0.01 # At most 1% planned risk across open positions
   max_drawdown: 0.08
   max_positions: 2

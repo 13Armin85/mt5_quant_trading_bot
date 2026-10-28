@@ -12,7 +12,7 @@ from core.data_feed import DataFeed
 from core.position_manager import PositionManager
 from database.repository import Repository
 from news.news_filter import NewsFilter
-from utils.types import TradingMode, Direction, Signal, OrderRequest
+from utils.types import TradingMode, Direction, Signal, OrderRequest, ExecutionResult
 
 
 @pytest.fixture
@@ -47,6 +47,32 @@ def test_runtime_paper_entry_exit_and_no_broker_order(paper_runtime,broker):
     assert not engine.execution.paper_positions() and not broker.sent
     assert engine.repository.recent_trades()[0].status=="PAPER_CLOSED"
     assert engine.repository.get_state("paper-account:paper_pnl") < 0
+
+
+def test_strong_setup_risk_reaches_execution_request(paper_runtime, broker, monkeypatch):
+    engine = paper_runtime
+    engine.cfg.settings["trading"]["risk_per_trade"] = .005
+    engine.risk.cfg["risk_per_trade"] = .005
+    engine.execution.cfg["risk_per_trade"] = .005
+    signal = Signal("EURUSD", Direction.BUY, .90, 1.1, 1.099, 1.103,
+        risk_reward=2.3, signal_id="strong-runtime", meta={
+            "profile": "baseline", "score_type": "uncalibrated_rule_suitability",
+            "selection": {"score_type": "uncalibrated_rule_suitability", "direction": "BUY",
+                "score": .86, "confirming_groups": ["trend", "momentum"]},
+            "trade_plan": {"accepted": True, "net_rr": 2.3, "minimum_net_rr": 1.5},
+            "runtime_decision": {}})
+    captured = []
+    monkeypatch.setattr(engine.news_filter, "evaluate", lambda _: (True, "Clear", 1.0))
+    monkeypatch.setattr(engine.news_filter, "direction_allowed", lambda *_: True)
+    monkeypatch.setattr(engine.execution, "execute", lambda req: captured.append(req) or ExecutionResult(False, None, None, "Captured"))
+    monkeypatch.setattr(engine.repository, "save_execution", lambda *args: None)
+    monkeypatch.setattr(engine, "record_decision", lambda *args, **kwargs: None)
+    engine.submit_signal("EURUSD", signal)
+    base = engine.risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info,
+        risk_fraction=.005)
+    assert len(captured) == 1 and captured[0].risk_fraction == .009
+    assert captured[0].minimum_net_rr == 2.0
+    assert captured[0].volume > base
 
 
 def test_out_of_sync_live_chart_does_not_submit(paper_runtime, broker, monkeypatch):

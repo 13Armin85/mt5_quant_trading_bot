@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from core.risk_manager import RiskManager
 import pytest
+from utils.types import Direction, Signal
 
 
 def info(tick_size, tick_value, min_v=.01, max_v=100, step=.01):
@@ -74,3 +75,47 @@ def test_failed_profit_calculation_blocks(broker, risk_cfg, monkeypatch):
 def test_invalid_equity_rejected(equity, risk_cfg):
     with pytest.raises(ValueError):
         RiskManager(risk_cfg).risk_amount(equity)
+
+
+def test_strong_setup_sizing_requires_independent_confirmation(broker, risk_cfg):
+    cfg = {**risk_cfg, "risk_per_trade": .005, "quality_sizing": {
+        "enabled": True, "risk_per_trade": .009, "min_confidence": .85,
+        "min_suitability": .80, "min_groups": 2, "min_net_rr": 2.0}}
+    risk = RiskManager(cfg, broker)
+    signal = Signal("EURUSD", Direction.BUY, .90, risk_reward=2.3, meta={
+        "profile": "baseline", "score_type": "uncalibrated_rule_suitability",
+        "selection": {"score_type": "uncalibrated_rule_suitability", "direction": "BUY",
+            "score": .86, "confirming_groups": ["trend", "momentum"]},
+        "trade_plan": {"accepted": True, "net_rr": 2.3}})
+    assert risk.signal_risk_fraction(signal) == (.009, "STRONG_SETUP")
+    base_volume = risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info, risk_fraction=.005)
+    strong_volume = risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info, risk_fraction=.009)
+    assert strong_volume > base_volume
+    assert risk.loss_per_lot("EURUSD", 1.1, 1.099, broker.info) * strong_volume <= 90
+    assert risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info,
+        open_risk=60, risk_fraction=.009) <= base_volume
+
+    signal.meta["selection"]["confirming_groups"] = ["trend"]
+    assert risk.signal_risk_fraction(signal) == (.005, "BASE")
+    signal.meta["selection"]["confirming_groups"] = ["trend", "momentum"]
+    signal.confidence = .84
+    assert risk.signal_risk_fraction(signal) == (.005, "BASE")
+    signal.confidence = .90
+    signal.meta["trade_plan"]["accepted"] = False
+    assert risk.signal_risk_fraction(signal) == (.005, "BASE")
+    with pytest.raises(ValueError, match="ceiling"):
+        risk.risk_amount(10000, .01)
+
+
+@pytest.mark.parametrize("change", [
+    {"risk_per_trade": .011},
+    {"min_confidence": .60},
+    {"min_groups": 1},
+    {"min_net_rr": 1.0},
+])
+def test_invalid_strong_setup_policy_is_rejected(change):
+    from config import load_config
+    cfg = load_config().model_copy(deep=True)
+    cfg.settings["trading"]["quality_sizing"].update(change)
+    with pytest.raises(ValueError, match="Strong-setup|strong-setup"):
+        cfg.validate_runtime()

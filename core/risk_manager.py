@@ -106,13 +106,47 @@ class RiskManager:
         self.state.paused_at = self.state.resume_at = self.state.pause_reason = None
         return True,"Operator resume accepted; other risk limits remain active"
 
-    def risk_amount(self, equity: float) -> float:
+    def risk_amount(self, equity: float, fraction: float | None = None) -> float:
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError("Invalid account equity")
-        fraction = float(self.cfg.get("risk_per_trade", .01))
-        if not 0 < fraction <= .01:
-            raise ValueError("Per-trade risk must be > 0 and <= 1%")
+        base = float(self.cfg.get("risk_per_trade", .01))
+        quality = self.cfg.get("quality_sizing", {})
+        ceiling = max(base, float(quality.get("risk_per_trade", base)) if quality.get("enabled") else base)
+        fraction = base if fraction is None else float(fraction)
+        if not math.isfinite(fraction) or not 0 < fraction <= min(.01, ceiling):
+            raise ValueError("Per-trade risk exceeds the configured ceiling")
         return equity * fraction
+
+    def signal_risk_fraction(self, signal) -> tuple[float, str]:
+        """Increase risk only for a well confirmed rule setup, never for a score alone."""
+        base = float(self.cfg.get("risk_per_trade", .01))
+        quality = self.cfg.get("quality_sizing", {})
+        meta = getattr(signal, "meta", {}) or {}
+        selection = meta.get("selection") or {}
+        plan = meta.get("trade_plan") or {}
+        direction = getattr(getattr(signal, "direction", None), "value", getattr(signal, "direction", None))
+        if (not quality.get("enabled") or direction not in {"BUY", "SELL"}
+                or meta.get("profile", "baseline") != "baseline"
+                or meta.get("score_type") != "uncalibrated_rule_suitability"
+                or selection.get("score_type") != "uncalibrated_rule_suitability"
+                or selection.get("direction") != direction or plan.get("accepted") is not True):
+            return base, "BASE"
+        groups = selection.get("confirming_groups") or []
+        if not isinstance(groups, list) or len(set(groups)) < int(quality.get("min_groups", 2)):
+            return base, "BASE"
+        try:
+            confidence = float(signal.confidence)
+            suitability = float(selection["score"])
+            net_rr = float(plan["net_rr"])
+            signal_rr = float(signal.risk_reward)
+        except (TypeError, ValueError, KeyError):
+            return base, "BASE"
+        if (not all(math.isfinite(value) for value in (confidence, suitability, net_rr, signal_rr))
+                or confidence < float(quality.get("min_confidence", .85))
+                or suitability < float(quality.get("min_suitability", .80))
+                or min(net_rr, signal_rr) < float(quality.get("min_net_rr", 2.0))):
+            return base, "BASE"
+        return float(quality["risk_per_trade"]), "STRONG_SETUP"
 
     @staticmethod
     def _floor_step(value: float, step: float) -> float:
@@ -141,13 +175,13 @@ class RiskManager:
             raise ValueError("Invalid estimated loss")
         return loss
 
-    def calculate_volume(self, symbol: str, entry: float, sl: float, equity: float, symbol_info=None, open_risk: float = 0, direction=None) -> float:
+    def calculate_volume(self, symbol: str, entry: float, sl: float, equity: float, symbol_info=None, open_risk: float = 0, direction=None, risk_fraction: float | None = None) -> float:
         if entry == sl:
             raise ValueError("Entry and stop loss cannot be equal")
         info = symbol_info or (self.client.symbol_info(symbol) if self.client else None)
         if info is None:
             raise ValueError(f"Missing symbol specification for {symbol}")
-        risk = min(self.risk_amount(equity), equity * min(.01, float(self.cfg.get("max_total_risk", .01))) - open_risk)
+        risk = min(self.risk_amount(equity, risk_fraction), equity * min(.01, float(self.cfg.get("max_total_risk", .01))) - open_risk)
         if not math.isfinite(open_risk) or open_risk < 0 or risk <= 0:
             return 0.0
         loss_per_lot = self.loss_per_lot(symbol, entry, sl, info, direction)

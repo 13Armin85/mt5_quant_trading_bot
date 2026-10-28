@@ -258,6 +258,8 @@ class TradingEngine:
             signal.stop_loss = signal.take_profit = signal.risk_reward = None
             signal.reasons.append("Configured economic surprise conflicts with technical direction")
             signal.meta.setdefault("reason_codes",[]).insert(0,"NEWS")
+        risk_fraction, risk_tier = self.risk.signal_risk_fraction(signal)
+        signal.meta["sizing"] = {"tier": risk_tier, "risk_fraction": risk_fraction}
         new_signal = self.repository.save_signal(signal)
         candle = signal.candle_time or frames["entry"].time.iloc[-1]
         candle_datetime = candle.to_pydatetime() if hasattr(candle,"to_pydatetime") else candle
@@ -271,7 +273,7 @@ class TradingEngine:
                     "regime":getattr(signal.market_regime,"value","UNCERTAIN"),
                     "session":", ".join(active_sessions(candle_datetime + timedelta(seconds=seconds))) or "closed",
                     "news":{"allowed":news_ok,"reason":news_reason},
-                    "spread":spread_status,"live_chart":chart,
+                    "spread":spread_status,"live_chart":chart,"sizing":signal.meta["sizing"],
             "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"),
             "candidate_plans":signal.meta.get("candidate_plans"),"reasons": signal.reasons}
         signal.meta["runtime_decision"] = decision
@@ -378,12 +380,12 @@ class TradingEngine:
         if info is None:
             self.record_decision(decision, "risk", "Symbol specification unavailable")
             return signal
-        lot = self.risk.calculate_volume(symbol, signal.entry_price, signal.stop_loss, equity, info, exposure, signal.direction)
-        if profile_cfg is not None and lot > 0:
-            profile_fraction = min(float(profile_cfg.get("trading.risk_per_trade", .005)),
-                float(self.cfg.get("trading.risk_per_trade", .005)))
-            loss_per_lot = self.risk.loss_per_lot(symbol, signal.entry_price, signal.stop_loss, info, signal.direction)
-            lot = min(lot, self.risk._floor_step(equity * profile_fraction / loss_per_lot, float(info.volume_step)))
+        risk_fraction, risk_tier = self.risk.signal_risk_fraction(signal)
+        if profile_cfg is not None:
+            risk_fraction = min(risk_fraction, float(profile_cfg.get("trading.risk_per_trade", .005)))
+            risk_tier = "PROFILE_CAP"
+        lot = self.risk.calculate_volume(symbol, signal.entry_price, signal.stop_loss, equity, info, exposure,
+            signal.direction, risk_fraction)
         if lot <= 0:
             logger.warning("{} rejected: calculated volume below broker minimum", symbol)
             self.record_decision(decision, "risk", "Calculated volume below broker minimum", "MIN_LOT")
@@ -393,6 +395,10 @@ class TradingEngine:
         req = OrderRequest(symbol, signal.direction, lot, price, signal.stop_loss, signal.take_profit, int(self.risk.policy(symbol).get("max_deviation_points", 20)), magic=int(self.cfg.get("trading.magic", 260912)), comment=signal.signal_id or "quant-bot", signal_id=signal.signal_id)
         req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
         req.profile = profile
+        req.risk_fraction = risk_fraction
+        if risk_tier == "STRONG_SETUP":
+            req.minimum_net_rr = max(float(req.minimum_net_rr or 0),
+                float(self.cfg.get("trading.quality_sizing.min_net_rr", 2.0)))
         if not self.running:
             return signal
         # A new snapshot may have arrived while sizing/preparing this entry.
@@ -409,7 +415,7 @@ class TradingEngine:
         self.persist_risk()
         self.record_decision(decision,"execution", None if result.success else result.message,
             "FILLED" if result.success else reason_code(result.message), execution=result.message,
-            risk=result.planned_risk,volume=result.filled_volume)
+            risk=result.planned_risk,volume=result.filled_volume,risk_fraction=risk_fraction,risk_tier=risk_tier)
         logger.info("{} {} confidence={:.2f} result={}", symbol, signal.direction.value, signal.confidence, result.message)
         return signal
 

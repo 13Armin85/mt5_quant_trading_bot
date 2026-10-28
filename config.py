@@ -112,6 +112,24 @@ class AppConfig(BaseModel):
             value = float(self.get(f"trading.{key}", .01))
             if not math.isfinite(value) or not 0 < value <= .01:
                 raise ValueError(f"trading.{key} must be > 0 and <= 0.01")
+        quality = self.get("trading.quality_sizing", {})
+        if not isinstance(quality, dict) or type(quality.get("enabled", False)) is not bool:
+            raise ValueError("trading.quality_sizing must have a boolean enabled flag")
+        if quality.get("enabled"):
+            base = float(self.get("trading.risk_per_trade", .005))
+            strong = float(quality.get("risk_per_trade", 0))
+            total = float(self.get("trading.max_total_risk", .01))
+            if not math.isfinite(strong) or not base < strong <= min(.01, total):
+                raise ValueError("Strong-setup risk must exceed base risk and remain within the portfolio cap")
+            confidence = float(quality.get("min_confidence", 0))
+            suitability = float(quality.get("min_suitability", 0))
+            net_rr = float(quality.get("min_net_rr", 0))
+            groups = quality.get("min_groups", 0)
+            if (not math.isfinite(confidence) or not float(self.get("trading.min_confidence", .70)) <= confidence <= 1
+                    or not math.isfinite(suitability) or not float(self.get("strategy.selection.minimum_score", .65)) <= suitability <= 1
+                    or not math.isfinite(net_rr) or net_rr < float(self.get("trading.min_rr", 1.5))
+                    or type(groups) is not int or not 2 <= groups <= 4):
+                raise ValueError("Invalid strong-setup confirmation thresholds")
         for key, default in (("poll_seconds", 2), ("max_tick_age_seconds", 15), ("max_spread_points", 40)):
             value = float(self.get(f"trading.{key}", default))
             if not math.isfinite(value) or value <= 0:

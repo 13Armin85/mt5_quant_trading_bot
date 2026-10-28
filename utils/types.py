@@ -69,6 +69,7 @@ class OrderRequest:
     signal_id: str | None = None
     minimum_net_rr: float | None = None
     profile: str = "baseline"
+    risk_fraction: float | None = None
 
 
 @dataclass(slots=True)

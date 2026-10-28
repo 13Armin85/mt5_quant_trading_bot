@@ -31,7 +31,10 @@ def render():
     c1,c2,c3,c4 = st.columns(4)
     mode = heartbeat.get("mode", "Not running")
     c1.metric("Runtime mode", mode if age is not None and age < 180 else "Stopped · " + mode)
-    c2.metric("Risk / trade", f"{cfg.get('trading.risk_per_trade',.005)*100:.1f}%")
+    base_risk = float(cfg.get("trading.risk_per_trade", .005))
+    quality_risk = cfg.get("trading.quality_sizing", {})
+    upper_risk = float(quality_risk.get("risk_per_trade", base_risk)) if quality_risk.get("enabled") else base_risk
+    c2.metric("Risk / trade (base / strong)", f"{base_risk*100:.1f}% / {upper_risk*100:.1f}%")
     c3.metric("Account connected", "Yes" if heartbeat.get("connected") and age is not None and age < 180 else "No")
     c4.metric("Heartbeat age", f"{age:.0f}s" if age is not None else "Waiting")
     if age is None or age > 180:
@@ -75,6 +78,9 @@ def render():
                         "note": "Confirmed strategies use completed candles; these live levels can change before close."})
         selection = analysis.get("selection") or {}
         st.caption(selection.get("reason", ""))
+        sizing = analysis.get("sizing") or {}
+        if sizing:
+            st.caption(f"Risk tier: {sizing.get('tier')} | Per-trade risk ceiling: {float(sizing.get('risk_fraction', 0))*100:.2f}% of equity")
         if analysis.get("candidate_plans"):
             with st.expander("Candidate trade plans"):
                 st.dataframe([{key: value for key, value in plan.items() if key != "trade_plan"}

@@ -49,6 +49,8 @@ class ExecutionEngine:
             return False, "LIVE requires persistent journal, risk manager and signal ID"
         if req.minimum_net_rr is not None and (not math.isfinite(req.minimum_net_rr) or req.minimum_net_rr<=0):
             return False,"Invalid minimum net reward/risk"
+        if req.risk_fraction is not None and (not math.isfinite(req.risk_fraction) or req.risk_fraction <= 0):
+            return False, "Invalid requested risk fraction"
         return True, "OK"
 
     def _prepare(self, req):
@@ -119,7 +121,7 @@ class ExecutionEngine:
         allowed, reason = self.risk.can_trade(equity, exposure / equity)
         if not allowed:
             raise ValueError(reason)
-        req.volume = min(req.volume, self.risk.calculate_volume(req.symbol, worst_entry, req.sl, equity, info, exposure, req.direction))
+        req.volume = min(req.volume, self.risk.calculate_volume(req.symbol, worst_entry, req.sl, equity, info, exposure, req.direction, req.risk_fraction))
         req.volume = self.risk._floor_step(req.volume, float(info.volume_step))
         if req.volume < info.volume_min:
             raise ValueError("Remaining risk budget below broker minimum")
@@ -136,7 +138,8 @@ class ExecutionEngine:
             free_margin = min(free_margin, equity - occupied)
         if margin is None or not math.isfinite(margin) or margin < 0 or margin > free_margin:
             raise ValueError("Insufficient or unknown free margin")
-        if planned > min(self.risk.risk_amount(equity), equity * .01 - exposure) + 1e-8:
+        if planned > min(self.risk.risk_amount(equity, req.risk_fraction),
+                         equity * min(.01, float(self.cfg.get("max_total_risk", .01))) - exposure) + 1e-8:
             raise ValueError("Final risk exceeds budget")
         return info, planned
 
@@ -162,6 +165,8 @@ class ExecutionEngine:
                        "magic": req.magic, "comment": (req.signal_id or req.comment)[:31],
                        "initial_risk": abs(req.price - req.sl), "created": datetime.now(timezone.utc).isoformat()}
             payload["requested_volume"] = req.volume
+            payload["risk_fraction"] = (req.risk_fraction if req.risk_fraction is not None
+                else float(self.risk.cfg.get("risk_per_trade", .01)) if self.risk is not None else None)
             payload["minimum_net_rr"] = max(float(self.cfg.get("min_rr",1.5)),req.minimum_net_rr or 0)
             if self.risk is not None:
                 payload["reward_risk"] = self.risk.reward_risk(req.symbol,req.direction,req.price,req.sl,req.tp,info)
