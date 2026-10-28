@@ -20,7 +20,7 @@ def reason_code(reason):
     for code, words in (
         ("KILL_SWITCH", ("kill switch",)),
         ("DUPLICATE", ("duplicate", "existing symbol", "existing paper symbol")),
-        ("QUOTE_CHANGE", ("quote changed", "quote change", "repriced order_check")),
+        ("QUOTE_CHANGE", ("quote changed", "quote change", "repriced order_check", "live quote moved")),
         ("BROKER_REJECT", ("broker order_check rejected", "broker rejected order")),
         ("PROFILE_CAPACITY", ("profile position capacity",)),
         ("COST", ("cost-to-stop", "costs/conversion", "round-trip spread")),

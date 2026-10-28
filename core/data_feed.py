@@ -10,6 +10,9 @@ from loguru import logger
 from core.market_hours import quote_session,open_seconds_between,bar_close_utc
 from signals.filters import assess_spread
 
+TIMEFRAME_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+                     "H1": 3600, "H4": 14400, "D1": 86400}
+
 
 class DataFeed:
     def __init__(self, client, max_tick_age_seconds: int = 15, symbol_config=None, *, clock=None) -> None:
@@ -78,7 +81,7 @@ class DataFeed:
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         self.validate_bars(df, count)
-        seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}[timeframe]
+        seconds = TIMEFRAME_SECONDS[timeframe]
         now=self.clock()
         if now.tzinfo is None:
             raise ValueError("Bar freshness requires timezone-aware UTC time")
@@ -90,6 +93,77 @@ class DataFeed:
             raise ValueError(f"{symbol} {timeframe}: stale or unclosed bar")
         df.attrs.update(last_bar_closed_at=closed.isoformat(),freshness_basis="trading_time" if allow_session_gaps else "wall_clock")
         return df
+
+    def live_chart_status(self, symbol, timeframe, closed_frame, quote_status, indicator_cfg=None):
+        """Read MT5's forming bar for display; only closed_frame drives signals.
+
+        A missing forming bar does not replace a valid broker tick. A bar that
+        contradicts the closed-bar snapshot does block the current evaluation.
+        """
+        seconds = TIMEFRAME_SECONDS[timeframe]
+        closed = closed_frame.iloc[-1]
+        closed_open = pd.Timestamp(closed["time"]).to_pydatetime()
+        expected_open = bar_close_utc(closed_open, seconds,
+            getattr(self.client, "market_timezone", timezone.utc))
+        result = {"source": "MT5", "timeframe": timeframe,
+            "status": "UNAVAILABLE", "reason": "Current broker bar unavailable",
+            "closed_bar_open_utc": closed_open.isoformat(),
+            "closed_bar_closed_at_utc": expected_open.isoformat(),
+            "tick_utc": quote_status.get("last_tick_utc"),
+            "bid": quote_status.get("bid"), "ask": quote_status.get("ask"),
+            "forming_bar": None, "provisional_indicators": {}}
+        if not hasattr(self.client, "copy_rates_from_pos"):
+            return result
+        try:
+            rates = self.client.copy_rates_from_pos(symbol, self.client.timeframe(timeframe), 0, 1)
+        except (ValueError, RuntimeError, TimeoutError, ConnectionError):
+            return result
+        if rates is None or len(rates) != 1:
+            return result
+        bar = pd.DataFrame(rates)
+        if "time" not in bar:
+            result.update(status="INVALID_BAR", reason="Invalid forming MT5 bar")
+            return result
+        try:
+            bar["time"] = pd.to_datetime(bar["time"], unit="s", utc=True)
+            self.validate_bars(bar)
+        except (TypeError, ValueError, OverflowError):
+            result.update(status="INVALID_BAR", reason="Invalid forming MT5 bar")
+            return result
+        row = bar.iloc[0]
+        opened = row.time.to_pydatetime()
+        closes_at = bar_close_utc(opened, seconds,
+            getattr(self.client, "market_timezone", timezone.utc))
+        result["forming_bar"] = {"open_utc": opened.isoformat(),
+            "closes_at_utc": closes_at.isoformat(),
+            **{name: float(row[name]) for name in ("open", "high", "low", "close")},
+            "tick_volume": float(row.get("tick_volume", 0))}
+        if opened != expected_open:
+            result.update(status="OUT_OF_SYNC", reason="Forming bar and confirmed chart history disagree; retry next cycle")
+            return result
+        tick_time = quote_status.get("last_tick_utc")
+        if tick_time and datetime.fromisoformat(tick_time) < opened:
+            result.update(status="OUT_OF_SYNC", reason="Broker tick predates the forming bar; retry next cycle")
+            return result
+        if self.clock() >= closes_at:
+            result.update(status="AWAITING_NEW_BAR", reason="Waiting for the first tick of the next broker bar")
+            return result
+        indicator_cfg = indicator_cfg or {}
+        chart_price = float(row["close"])
+        result["provisional_indicators"]["chart_price"] = chart_price
+        for name, config_key, default in (("ema_20", "ema_fast", 20),
+                                           ("ema_50", "ema_mid", 50),
+                                           ("ema_200", "ema_slow", 200)):
+            previous = float(closed.get(name, float("nan")))
+            if math.isfinite(previous):
+                period = int(indicator_cfg.get(config_key, default))
+                result["provisional_indicators"][name] = previous + 2 / (period + 1) * (chart_price - previous)
+        if all(name in closed for name in ("high", "low")):
+            result["provisional_indicators"].update(
+                above_last_high=chart_price > float(closed["high"]),
+                below_last_low=chart_price < float(closed["low"]))
+        result.update(status="LIVE", reason="Current MT5 bar and fresh broker quote observed; indicators are provisional")
+        return result
 
     @staticmethod
     def validate_bars(df, minimum=1):

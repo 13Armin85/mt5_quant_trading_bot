@@ -65,6 +65,14 @@ def render():
         if analysis.get("reason"):
             st.caption(analysis["reason"])
         st.caption(f"Analyzed: {analysis.get('updated_at','')} · {analysis.get('news',{}).get('reason','')}")
+        chart = analysis.get("live_chart") or {}
+        if chart:
+            st.caption(f"MT5 chart: {chart.get('status')} · Bid: {chart.get('bid')} · Ask: {chart.get('ask')} · Tick: {chart.get('tick_utc')}")
+            if chart.get("forming_bar"):
+                with st.expander("Current forming bar and provisional technical levels · " + analysis["symbol"]):
+                    st.json({"forming_bar": chart["forming_bar"],
+                        "provisional_indicators": chart.get("provisional_indicators", {}),
+                        "note": "Confirmed strategies use completed candles; these live levels can change before close."})
         selection = analysis.get("selection") or {}
         st.caption(selection.get("reason", ""))
         if analysis.get("candidate_plans"):

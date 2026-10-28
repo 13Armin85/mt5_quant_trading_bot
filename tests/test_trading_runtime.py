@@ -49,6 +49,16 @@ def test_runtime_paper_entry_exit_and_no_broker_order(paper_runtime,broker):
     assert engine.repository.get_state("paper-account:paper_pnl") < 0
 
 
+def test_out_of_sync_live_chart_does_not_submit(paper_runtime, broker, monkeypatch):
+    engine=paper_runtime
+    monkeypatch.setattr(engine.feed,"live_chart_status",lambda *a,**kw:{
+        "status":"OUT_OF_SYNC","reason":"Forming bar and confirmed chart history disagree"})
+    engine.process_symbol("EURUSD")
+    assert not engine.execution.paper_positions() and not broker.sent
+    decision=engine.repository.get_state("analysis:EURUSD")
+    assert decision["reason_code"]=="DATA_STALE"
+
+
 def test_profiles_keep_cache_and_analysis_independent_when_intraday_data_missing(paper_runtime, monkeypatch):
     base=paper_runtime
     base.cfg.settings["profiles"]["enabled"]=True

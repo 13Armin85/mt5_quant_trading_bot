@@ -232,7 +232,17 @@ class TradingEngine:
             "commission_per_lot":max(float(self.risk.policy(symbol).get("commission_per_lot",0)),float(cfg.get("trading.commission_per_lot",0))),
             "max_spread_points":min(float(self.risk.policy(symbol).get("max_spread_points",40)),float(cfg.get("trading.max_spread_points",40)))}
         context = pricing_context(self.client,symbol,policy)
+        latest_quote = {**quote_status, "bid": context["bid"], "ask": context["ask"],
+            "last_tick_utc": context["quote_time_utc"]}
+        chart = self.feed.live_chart_status(symbol, cfg.get("strategy.timeframes.entry", "M5"),
+            frames["entry"], latest_quote, cfg.get("strategy.indicators", {}))
+        if chart["status"] in {"OUT_OF_SYNC", "INVALID_BAR", "AWAITING_NEW_BAR"}:
+            code = "DATA_INVALID" if chart["status"] == "INVALID_BAR" else "DATA_STALE"
+            self.record_unavailable(symbol, chart["reason"], code, profile=profile_name, live_chart=chart)
+            return None
+        context["live_chart"] = chart
         signal = signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
+        signal.meta["live_chart"] = chart
         if not news_ok and signal.direction!=Direction.HOLD:
             signal.direction=Direction.HOLD
             signal.stop_loss=signal.take_profit=signal.risk_reward=None
@@ -261,7 +271,7 @@ class TradingEngine:
                     "regime":getattr(signal.market_regime,"value","UNCERTAIN"),
                     "session":", ".join(active_sessions(candle_datetime + timedelta(seconds=seconds))) or "closed",
                     "news":{"allowed":news_ok,"reason":news_reason},
-                    "spread":spread_status,
+                    "spread":spread_status,"live_chart":chart,
             "selection":signal.meta.get("selection"),"trade_plan":signal.meta.get("trade_plan"),
             "candidate_plans":signal.meta.get("candidate_plans"),"reasons": signal.reasons}
         signal.meta["runtime_decision"] = decision

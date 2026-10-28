@@ -152,6 +152,8 @@ strategy:
     trend: H1
     setup: M15
     entry: M5
+  live_chart:
+    max_entry_drift_atr: 1.5 # Reject chasing a quote far from the confirmed candle setup.
   weights:
     trend: 0.20
     structure: 0.20

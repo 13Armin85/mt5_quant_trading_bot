@@ -24,9 +24,15 @@ def scan_symbol(cfg, client, logical):
     regime = detect_regime(frames["trend"],cfg.get("strategy.filters",{}))
     structure = analyze_structure(frames["setup"])
     volume = analyze_volume(frames["setup"],cfg.get("strategy.indicators",{}))
+    quote_status = feed.tick_status(symbol)
+    context = pricing_context(client,symbol,trading_policy(symbol,cfg.get("trading",{}),cfg.symbols))
+    chart = feed.live_chart_status(symbol,cfg.get("strategy.timeframes.entry","M5"),frames["entry"],
+        {**quote_status,"bid":context["bid"],"ask":context["ask"],
+         "last_tick_utc":context["quote_time_utc"]},cfg.get("strategy.indicators",{}))
     signal = SignalEngine(cfg).generate(symbol,frames,regime,structure,volume,False,
-        "Read-only technical snapshot; news not validated at historical decision time",0,feed.spread_points(symbol),pricing_context(client,symbol,trading_policy(symbol,cfg.get("trading",{}),cfg.symbols)))
+        "Read-only technical snapshot; news not validated at historical decision time",0,feed.spread_points(symbol),context)
+    signal.meta["live_chart"] = chart
     return {"symbol":symbol,"logical_symbol":logical,"generated_at":datetime.now(timezone.utc).isoformat(),
-            "read_only":True,"orders_enabled":False,"fresh_tick":feed.is_tick_fresh(symbol),
+            "read_only":True,"orders_enabled":False,"fresh_tick":quote_status["fresh"],
             "regime":regime.value,"candles":{role:str(frame.time.iloc[-1]) for role,frame in frames.items()},
             "final_direction":signal.direction.value,"reasons":signal.reasons,**signal.meta}

@@ -127,6 +127,9 @@ class AppConfig(BaseModel):
             raise ValueError("strategy.timeframes requires macro, trend, setup and entry")
         if any(tf not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"} for tf in tfs.values()):
             raise ValueError("Unsupported strategy timeframe")
+        drift = float(self.get("strategy.live_chart.max_entry_drift_atr", 1.5))
+        if not math.isfinite(drift) or not 0 < drift <= 5:
+            raise ValueError("strategy.live_chart.max_entry_drift_atr must be > 0 and <= 5")
         if not self.symbols.get("symbols"):
             raise ValueError("Configure at least one symbol")
         for logical,meta in self.symbols["symbols"].items():

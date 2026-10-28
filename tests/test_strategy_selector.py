@@ -264,6 +264,7 @@ def test_scanner_is_read_only_and_explicit_about_historical_news(broker,monkeypa
     report=scan_symbol(load_config(),broker,"EURUSD")
     assert len(requests)==4 and all(r["require_fresh"] is False for r in requests)
     assert report["read_only"] and not report["orders_enabled"] and report["final_direction"]=="HOLD"
+    assert report["live_chart"]["source"]=="MT5"
     assert len(report["selection"]["assessments"])==len(FAMILIES)
     assert any("news not validated" in reason for reason in report["reasons"])
 

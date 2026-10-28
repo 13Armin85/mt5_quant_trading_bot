@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from config import load_config
-from signals.trade_plan import build_trade_plan,net_reward_risk
+from signals.trade_plan import build_trade_plan,net_reward_risk,pricing_context
 from utils.types import Direction,MarketRegime,OrderRequest
 from analysis.indicators import add_indicators
 from backtest.engine import BacktestEngine
@@ -27,6 +27,12 @@ def context(commission=7,slip=.1,tick=.01):
             "cost_basis":"broker_account_currency_estimate"}
 
 
+def test_pricing_context_uses_latest_broker_quote(broker):
+    live=pricing_context(broker,"EURUSD",{"commission_per_lot":7,"slippage_points":20})
+    assert live["bid"]==broker.quote.bid and live["ask"]==broker.quote.ask
+    assert live["quote_time_utc"] and live["spread_price"]==pytest.approx(broker.quote.ask-broker.quote.bid)
+
+
 @pytest.mark.parametrize("direction",[Direction.BUY,Direction.SELL])
 @pytest.mark.parametrize("regime,wanted",[(MarketRegime.RANGING,1.5),(MarketRegime.TRENDING_BULLISH,2),(MarketRegime.BREAKOUT,2.5)])
 def test_regime_targets_are_net_of_commission_and_slippage(direction,regime,wanted):
@@ -44,6 +50,28 @@ def test_spread_and_entry_slippage_are_in_the_planned_entry():
     buy=build_trade_plan(frames(),Direction.BUY,MarketRegime.TRENDING_BULLISH,"momentum",config(),cx)
     sell=build_trade_plan(frames(),Direction.SELL,MarketRegime.TRENDING_BEARISH,"momentum",config(),cx)
     assert buy.entry==pytest.approx(100.3) and sell.entry==pytest.approx(99.9)
+    assert buy.entry_basis==sell.entry_basis=="closed_bar_estimate"
+
+
+def test_live_bid_ask_prices_the_plan_instead_of_previous_close():
+    cx=context();cx.update(bid=100.4,ask=100.5,spread_price=.1)
+    buy=build_trade_plan(frames(),Direction.BUY,MarketRegime.TRENDING_BULLISH,"momentum",config(),cx)
+    sell=build_trade_plan(frames(),Direction.SELL,MarketRegime.TRENDING_BEARISH,"momentum",config(),cx)
+    assert buy.accepted and sell.accepted
+    assert buy.entry==pytest.approx(100.6) and sell.entry==pytest.approx(100.3)
+    assert buy.entry_basis==sell.entry_basis=="live_broker_bid_ask"
+
+
+def test_live_quote_far_from_confirmed_setup_is_rejected():
+    cx=context();cx.update(bid=105.,ask=105.1)
+    plan=build_trade_plan(frames(),Direction.BUY,MarketRegime.TRENDING_BULLISH,"momentum",config(),cx)
+    assert not plan.accepted and "Live quote moved" in plan.reason
+
+
+def test_invalid_live_chart_drift_limit_is_rejected():
+    cfg=config();cfg.settings["strategy"]["live_chart"]["max_entry_drift_atr"]=float("nan")
+    with pytest.raises(ValueError,match="max_entry_drift_atr"):
+        cfg.validate_runtime()
 
 
 def test_profile_rejects_round_trip_cost_that_consumes_too_much_stop_budget():

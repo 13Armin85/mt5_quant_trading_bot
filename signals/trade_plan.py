@@ -3,6 +3,7 @@
 These configurable rules are research assumptions, not an optimized trading edge.
 """
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 import math
 
 from analysis.market_structure import _swings
@@ -15,6 +16,7 @@ class TradePlan:
     accepted: bool
     direction: str
     entry: float | None = None
+    entry_basis: str = "closed_bar_estimate"
     sl: float | None = None
     tp: float | None = None
     gross_rr: float | None = None
@@ -66,10 +68,15 @@ def pricing_context(client, symbol, trading_cfg):
     info,tick = client.symbol_info(symbol),client.symbol_info_tick(symbol)
     if info is None or tick is None:
         raise ValueError("Cannot build trade plan without broker specification and quote")
+    bid, ask = float(tick.bid), float(tick.ask)
+    if not all(math.isfinite(value) and value > 0 for value in (bid, ask)) or ask < bid:
+        raise ValueError("Invalid live broker Bid/Ask for trade plan")
     return {"point":float(info.point),"tick_size":float(info.trade_tick_size),
             "max_spread_points":float(trading_cfg.get("max_spread_points",40)),
-            "spread_price":float(tick.ask-tick.bid),
-            "commission_per_lot":commission_per_lot(client,symbol,trading_cfg,max(float(tick.ask),float(tick.bid))),
+            "bid":bid,"ask":ask,
+            "quote_time_utc":datetime.fromtimestamp(float(tick.time),timezone.utc).isoformat(),
+            "spread_price":ask-bid,
+            "commission_per_lot":commission_per_lot(client,symbol,trading_cfg,ask),
             "commission_at_entry":lambda entry:commission_per_lot(client,symbol,trading_cfg,entry),
             "exit_slippage":float(trading_cfg.get("slippage_points",0))*float(info.point),
             "profit":lambda side,entry,exit:client.order_calc_profit(0 if side=="BUY" else 1,symbol,1.0,entry,exit),
@@ -97,8 +104,25 @@ def build_trade_plan(frames, direction, regime, strategy, cfg, context=None):
     if not all(math.isfinite(v) and v>=0 for v in (spread,slip,commission,tick)):
         plan.reason = "Invalid trade-plan costs"
         return plan
-    # Input forex bars are Bid. Entry slippage is an explicit conservative estimate.
-    entry = close + (spread+slip if side=="BUY" else -slip)
+    bid, ask = context.get("bid"), context.get("ask")
+    if (bid is None) != (ask is None):
+        plan.reason = "Incomplete live broker Bid/Ask"
+        return plan
+    if bid is not None:
+        bid, ask = float(bid), float(ask)
+        if not all(math.isfinite(v) and v > 0 for v in (bid, ask)) or ask < bid:
+            plan.reason = "Invalid live broker Bid/Ask"
+            return plan
+        maximum_drift = float(cfg.get("strategy.live_chart.max_entry_drift_atr", 1.5))
+        if min(abs(bid-close), abs(ask-close)) > maximum_drift * atr:
+            plan.reason = "Live quote moved too far from confirmed chart setup"
+            return plan
+        spread = ask-bid
+        entry = (ask+slip) if side=="BUY" else (bid-slip)
+        plan.entry_basis = "live_broker_bid_ask"
+    else:
+        # Historical research has no simultaneous live Bid/Ask snapshot.
+        entry = close + (spread+slip if side=="BUY" else -slip)
     plan.entry = entry
     if context.get("commission_at_entry"):
         commission = float(context["commission_at_entry"](entry))
