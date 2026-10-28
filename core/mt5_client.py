@@ -43,7 +43,20 @@ class MT5Client:
         normalized = rows.copy()
         for field, unit in (("time", "s"), ("time_msc", "ms")):
             if field in (rows.dtype.names or ()):
-                values = pd.to_datetime(rows[field], unit=unit).tz_localize(self.market_timezone, ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+                naive = pd.to_datetime(rows[field], unit=unit)
+                try:
+                    localized = naive.tz_localize(self.market_timezone, ambiguous="infer", nonexistent="raise")
+                except ValueError:
+                    # A single bar in the repeated DST hour has no observable fold.
+                    # Place it at the later occurrence so historical data cannot
+                    # appear before it was available. Tick arrays remain strict.
+                    if "open" not in rows.dtype.names:
+                        raise
+                    probe = naive.tz_localize(self.market_timezone, ambiguous="NaT", nonexistent="raise")
+                    if not probe.isna().any():
+                        raise
+                    localized = naive.tz_localize(self.market_timezone, ambiguous=False, nonexistent="raise")
+                values = localized.tz_convert("UTC")
                 normalized[field] = values.as_unit(unit).asi8
         return normalized
 

@@ -2,19 +2,19 @@ trading:
   mt5_time_zone: Europe/Helsinki # Observed LiteFinance server wall-clock timestamps; DST-aware. Use UTC for standard UTC APIs.
   mode: PAPER
   poll_seconds: 2
-  risk_per_trade: 0.005
-  max_total_risk: 0.01
-  max_drawdown: 0.10
-  max_positions: 3
-  max_trades_per_day: 10
+  risk_per_trade: 0.005 # 0.5% of equity per qualified entry
+  max_total_risk: 0.01 # At most 1% planned risk across open positions
+  max_drawdown: 0.08
+  max_positions: 2
+  max_trades_per_day: 6
   max_spread_points: 40
   commission_per_lot: 7.0 # round trip, in account currency
   slippage_points: 20
   magic: 260912
   reconnect_attempts: 3
   reconnect_delay_seconds: 5
-  max_daily_loss: 0.03
-  max_weekly_loss: 0.06
+  max_daily_loss: 0.015 # About three full-risk losses in one UTC day
+  max_weekly_loss: 0.04
   max_consecutive_losses: 3
   loss_pause_resume: manual # LIVE keeps its existing lock until operator review.
   paper_loss_pause_resume: next_day # Explicit UTC next-day resume; other limits still apply.

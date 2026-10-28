@@ -67,6 +67,14 @@ def test_litefinance_bar_times_are_copied_and_normalized():
     assert rates[0]["time"]==raw
 
 
+def test_crypto_history_with_single_ambiguous_fall_back_bar_is_conservative():
+    client=MT5Client(EnvSettings(_env_file=None),"Europe/Helsinki")
+    raw=int(datetime(2026,10,25,3,0,tzinfo=timezone.utc).timestamp())
+    rates=np.array([(raw,1.0)],dtype=[("time","i8"),("open","f8")])
+    normalized=client.normalize_market_times(rates)
+    assert normalized[0]["time"]==int(datetime(2026,10,25,1,0,tzinfo=timezone.utc).timestamp())
+
+
 def test_litefinance_tick_normalization_preserves_price_and_milliseconds(monkeypatch):
     fake=fake_mt5()
     raw=int(datetime(2026,10,23,23,59,58,tzinfo=timezone.utc).timestamp())

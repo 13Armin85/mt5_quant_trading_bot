@@ -43,8 +43,10 @@ The implementation includes MT5 connectivity, multi-timeframe data, indicator an
 - `trading.mode: PAPER`
 - `risk_per_trade: 0.005` (0.5% per entry; hard ceiling 1%)
 - `max_total_risk: 0.01`
-- `max_daily_loss: 0.03`
-- `max_weekly_loss: 0.06`
+- `max_daily_loss: 0.015` (1.5%)
+- `max_weekly_loss: 0.04` (4%)
+- `max_drawdown: 0.08` (8%)
+- `max_positions: 2`; `max_trades_per_day: 6`
 - `max_consecutive_losses: 3`
 - minimum confidence `0.70`
 - mandatory SL/TP
