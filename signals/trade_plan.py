@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 import math
 
 from analysis.market_structure import _swings
+from core.symbol_policy import commission_per_lot
 from utils.types import Direction, MarketRegime
 
 
@@ -67,7 +68,8 @@ def pricing_context(client, symbol, trading_cfg):
     return {"point":float(info.point),"tick_size":float(info.trade_tick_size),
             "max_spread_points":float(trading_cfg.get("max_spread_points",40)),
             "spread_price":float(tick.ask-tick.bid),
-            "commission_per_lot":float(trading_cfg.get("commission_per_lot",0)),
+            "commission_per_lot":commission_per_lot(client,symbol,trading_cfg,max(float(tick.ask),float(tick.bid))),
+            "commission_at_entry":lambda entry:commission_per_lot(client,symbol,trading_cfg,entry),
             "exit_slippage":float(trading_cfg.get("slippage_points",0))*float(info.point),
             "profit":lambda side,entry,exit:client.order_calc_profit(0 if side=="BUY" else 1,symbol,1.0,entry,exit),
             "cost_basis":"broker_account_currency_estimate"}
@@ -97,6 +99,11 @@ def build_trade_plan(frames, direction, regime, strategy, cfg, context=None):
     # Input forex bars are Bid. Entry slippage is an explicit conservative estimate.
     entry = close + (spread+slip if side=="BUY" else -slip)
     plan.entry = entry
+    if context.get("commission_at_entry"):
+        commission = float(context["commission_at_entry"](entry))
+        if not math.isfinite(commission) or commission < 0:
+            plan.reason = "Invalid entry commission"
+            return plan
     buffer = atr*float(cfg.get("strategy.reward_risk.structure_buffer_atr",.1))
     stop_distance = atr*float(cfg.get("strategy.stop_atr_multiple",1.5))
     window = int(cfg.get("strategy.reward_risk.swing_window",3))

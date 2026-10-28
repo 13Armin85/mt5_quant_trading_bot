@@ -39,6 +39,10 @@ class RiskManager:
         from core.symbol_policy import trading_policy
         return trading_policy(symbol, self.cfg, self.symbols)
 
+    def commission_per_lot(self, symbol, entry):
+        from core.symbol_policy import commission_per_lot
+        return commission_per_lot(self.client, symbol, self.policy(symbol), entry)
+
     def initialize_state(self, equity: float) -> None:
         now = self.clock()
         self.state = RiskState(equity, equity, day=now.date().isoformat(), week=now.strftime("%G-%V"), peak_equity=equity)
@@ -132,7 +136,7 @@ class RiskManager:
             loss = -float(pnl)
         else:
             loss = self.theoretical_loss(entry, stop, 1, info)
-        loss += float(policy.get("commission_per_lot", 0))
+        loss += self.commission_per_lot(symbol, entry)
         if not math.isfinite(loss) or loss <= 0:
             raise ValueError("Invalid estimated loss")
         return loss
@@ -164,7 +168,7 @@ class RiskManager:
             value = float(info.trade_tick_value)/float(info.trade_tick_size)
             profit = lambda start,end:(1 if side=="BUY" else -1)*(end-start)*value
         policy = self.policy(symbol)
-        return net_reward_risk(side,entry,sl,tp,profit,float(policy.get("commission_per_lot",0)),
+        return net_reward_risk(side,entry,sl,tp,profit,self.commission_per_lot(symbol,entry),
                                float(policy.get("slippage_points",0))*float(info.point))
 
     def theoretical_loss(self, entry: float, sl: float, volume: float, symbol_info) -> float:

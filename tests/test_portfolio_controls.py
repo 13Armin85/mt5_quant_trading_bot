@@ -7,6 +7,7 @@ import pytest
 from config import load_config
 from core.correlation import CorrelationGuard
 from core.risk_manager import RiskManager, RiskState
+from core.symbol_policy import commission_per_lot
 from core.symbol_policy import trading_policy
 from database.repository import Repository
 
@@ -20,6 +21,18 @@ def test_news_usd_tag_does_not_equate_gold_fx_and_indices():
     assert g.can_open("XAUUSD_o",[("EURUSD_o","BUY")],pd.DataFrame())[0]
     assert g.can_open("NQ",[("EURUSD_o","BUY")],pd.DataFrame())[0]
     assert not g.can_open("YM",[("NQ","BUY")],pd.DataFrame())[0]
+
+
+def test_new_markets_have_broker_mappings_and_concentration_limits():
+    symbols = load_config().symbols["symbols"]
+    assert len(symbols) == 21
+    assert all(symbols[name]["broker_symbol"] == name for name in ("BTCUSD", "ETHUSD", "SOLUSD", "USCRUDE", "UKBRENT"))
+    g = guard()
+    assert not g.can_open("UKBRENT", [("USCRUDE", "BUY")], pd.DataFrame())[0]
+    assert not g.can_open("ETHUSD", [("BTCUSD", "BUY")], pd.DataFrame())[0]
+    assert not g.can_open("XAGUSD_o", [("XAUUSD_o", "BUY")], pd.DataFrame())[0]
+    assert not g.can_open("SPX", [("NQ", "BUY")], pd.DataFrame())[0]
+    assert g.can_open("ETHUSD", [("BTCUSD", "SELL")], pd.DataFrame())[0]
 
 
 def test_currency_factor_direction_and_unknown_mapping():
@@ -87,7 +100,23 @@ def test_per_symbol_costs_override_without_news_mapping(broker,risk_cfg):
     assert trading_policy("XAUUSD",risk_cfg,symbols)==risk_cfg
 
 
-@pytest.mark.parametrize("costs",[{"slippage_points":-1},{"point":.001},{"commission_per_lot":float("nan")},{"max_spread_points":"40"}])
+def test_crypto_percentage_fee_affects_both_size_and_reward_risk(broker, risk_cfg):
+    broker.info.trade_calc_mode = 2
+    symbols = load_config().symbols
+    risk = RiskManager(risk_cfg, broker, symbols=symbols)
+    fixed_only = RiskManager(risk_cfg, broker)
+    entry, stop, target = 100.0, 99.0, 102.0
+    expected = 100000 * entry * 0.0012
+    assert risk.commission_per_lot("BTCUSD", entry) == pytest.approx(expected)
+    assert risk.loss_per_lot("BTCUSD", entry, stop, broker.info) > fixed_only.loss_per_lot("BTCUSD", entry, stop, broker.info)
+    assert risk.reward_risk("BTCUSD", "BUY", entry, stop, target, broker.info)["net_rr"] < fixed_only.reward_risk("BTCUSD", "BUY", entry, stop, target, broker.info)["net_rr"]
+    assert risk.calculate_volume("BTCUSD", entry, stop, 10000, broker.info) <= fixed_only.calculate_volume("BTCUSD", entry, stop, 10000, broker.info)
+    broker.info.trade_calc_mode = 0
+    with pytest.raises(ValueError, match="linear CFD"):
+        commission_per_lot(broker, "BTCUSD", risk.policy("BTCUSD"), entry)
+
+
+@pytest.mark.parametrize("costs",[{"slippage_points":-1},{"point":.001},{"commission_per_lot":float("nan")},{"max_spread_points":"40"},{"commission_rate":1}])
 def test_invalid_symbol_costs_rejected(costs):
     cfg = load_config().model_copy(deep=True)
     cfg.symbols["symbols"]["EURUSD"]["costs"] = costs

@@ -74,6 +74,17 @@ def test_no_schedule_does_not_assume_weekend_closure(broker):
     assert state["status"]=="FRESH" and not state["schedule_known"]
 
 
+def test_new_market_sessions_follow_litefinance_dst_week():
+    from config import load_config
+    symbols = load_config().symbols["symbols"]
+    assert quote_session(symbols["BTCUSD"].get("quote_schedule"), date("2026-10-25T12:00:00Z"))["scheduled_closed"] is False
+    assert quote_session(symbols["USCRUDE"]["quote_schedule"], date("2026-10-28T21:30:00Z"))["scheduled_closed"]
+    assert quote_session(symbols["XAGUSD"]["quote_schedule"], date("2026-10-28T21:30:00Z"))["scheduled_closed"]
+    assert quote_session(symbols["UKBRENT"]["quote_schedule"], date("2026-10-26T23:00:00Z"))["scheduled_closed"]
+    assert not quote_session(symbols["UKBRENT"]["quote_schedule"], date("2026-10-27T00:05:00Z"))["scheduled_closed"]
+    assert quote_session(symbols["DAX40"]["quote_schedule"], date("2026-10-28T21:30:00Z"))["scheduled_closed"]
+
+
 @pytest.mark.parametrize("timestamp,bid,ask",[(float("nan"),1,2),(1,float("nan"),2),(1,2,1)])
 def test_invalid_quote_never_becomes_fresh(broker,timestamp,bid,ask):
     broker.quote=SimpleNamespace(time=timestamp,bid=bid,ask=ask)

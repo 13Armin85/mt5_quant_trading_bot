@@ -418,7 +418,7 @@ class TradingEngine:
                     profit = self.client.order_calc_profit(0 if buy else 1, p["symbol"], p["volume"], p["price"], exit_price)
                     if profit is None or not math.isfinite(profit):
                         raise ValueError("Paper close calculation unavailable")
-                    profit -= float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
+                    profit -= self.risk.commission_per_lot(p["symbol"], p["price"]) * p["volume"]
                     state = self.risk.closed_state(profit + p.get("partial_realized", 0))
                     if self.repository.settle_paper(p["key"], self.execution.scope, p["ticket"], exit_price, profit, reason=reason, risk_state=state):
                         self.risk.state = state
@@ -434,7 +434,7 @@ class TradingEngine:
                         profit = self.client.order_calc_profit(0 if buy else 1, p["symbol"], volume, p["price"], exit_price)
                         if profit is None or not math.isfinite(profit):
                             raise ValueError("Paper partial-close calculation unavailable")
-                        profit -= float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * volume
+                        profit -= self.risk.commission_per_lot(p["symbol"], p["price"]) * volume
                         p["risk"] *= (p["volume"] - volume) / p["volume"]
                         p["volume"] = round(p["volume"] - volume, 8)
                         p["partial_done"] = True
@@ -509,5 +509,5 @@ class TradingEngine:
             pnl = self.client.order_calc_profit(0 if p["direction"] == "BUY" else 1, p["symbol"], p["volume"], p["price"], price)
             if pnl is None or not math.isfinite(pnl):
                 raise ValueError("Paper mark-to-market unavailable")
-            equity += pnl - float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
+            equity += pnl - self.risk.commission_per_lot(p["symbol"], p["price"]) * p["volume"]
         return equity

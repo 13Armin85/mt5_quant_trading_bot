@@ -113,7 +113,7 @@ class ExecutionEngine:
                 pnl = self.client.order_calc_profit(0 if p["direction"] == "BUY" else 1, p["symbol"], p["volume"], p["price"], mark)
                 if pnl is None:
                     raise ValueError("Paper equity calculation unavailable")
-                equity += pnl - float(self.risk.policy(p["symbol"]).get("commission_per_lot", 0)) * p["volume"]
+                equity += pnl - self.risk.commission_per_lot(p["symbol"], p["price"]) * p["volume"]
         else:
             equity = float(account.equity)
         allowed, reason = self.risk.can_trade(equity, exposure / equity)

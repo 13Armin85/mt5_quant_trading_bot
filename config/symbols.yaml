@@ -21,10 +21,40 @@ symbols:
     quote_schedule: *forex_schedule
     aliases: [USDJPY, USDJPYm, USDJPY.a]
     currencies: [USD, JPY]
+  AUDUSD:
+    broker_symbol: AUDUSD_o
+    quote_schedule: *forex_schedule
+    aliases: [AUDUSD, AUDUSDm, AUDUSD.a]
+    currencies: [AUD, USD]
+  USDCAD:
+    broker_symbol: USDCAD_o
+    quote_schedule: *forex_schedule
+    aliases: [USDCAD, USDCADm, USDCAD.a]
+    currencies: [USD, CAD]
+  USDCHF:
+    broker_symbol: USDCHF_o
+    quote_schedule: *forex_schedule
+    aliases: [USDCHF, USDCHFm, USDCHF.a]
+    currencies: [USD, CHF]
+  EURJPY:
+    broker_symbol: EURJPY_o
+    quote_schedule: *forex_schedule
+    aliases: [EURJPY, EURJPYm, EURJPY.a]
+    currencies: [EUR, JPY]
+  GBPJPY:
+    broker_symbol: GBPJPY_o
+    quote_schedule: *forex_schedule
+    aliases: [GBPJPY, GBPJPYm, GBPJPY.a]
+    currencies: [GBP, JPY]
+  AUDJPY:
+    broker_symbol: AUDJPY_o
+    quote_schedule: *forex_schedule
+    aliases: [AUDJPY, AUDJPYm, AUDJPY.a]
+    currencies: [AUD, JPY]
   XAUUSD:
-    risk_factors: {gold: 1}
+    risk_factors: {gold: 1, precious_metals: 1}
     broker_symbol: XAUUSD_o
-    quote_schedule:
+    quote_schedule: &metals_schedule
       type: weekly_sessions
       timezone: America/New_York # US-market DST, separate from the Helsinki server clock.
       source: https://www.litefinance.org/company/detail/news/109315/
@@ -63,3 +93,117 @@ symbols:
     quote_schedule: *us_index_schedule
     aliases: [US30, YM, DJ30, DJIA]
     currencies: [USD]
+  SP500:
+    risk_factors: {us_equities: 1}
+    broker_symbol: SPX
+    quote_schedule: *us_index_schedule
+    aliases: [SPX, SP500, US500]
+    currencies: [USD]
+    costs: {max_spread_points: 60, commission_per_lot: 3.5}
+  DAX40:
+    risk_factors: {european_equities: 1}
+    broker_symbol: FDAX
+    quote_schedule:
+      type: weekly_sessions
+      timezone: Europe/Helsinki
+      source: https://www.litefinance.org/company/detail/news/109315/
+      weekly:
+        0: [["01:05", "24:00"]]
+        1: [["01:05", "24:00"]]
+        2: [["01:05", "24:00"]]
+        3: [["01:05", "24:00"]]
+        4: [["01:05", "24:00"]]
+        5: []
+        6: []
+      exceptions:
+        "2026-10-26": [["00:00", "23:00"]]
+        "2026-10-27": [["00:00", "23:00"]]
+        "2026-10-28": [["00:00", "23:00"]]
+        "2026-10-29": [["00:00", "23:00"]]
+        "2026-10-30": [["00:00", "23:00"]]
+    aliases: [FDAX, DAX40, DE40]
+    currencies: [EUR]
+    costs: {max_spread_points: 120, commission_per_lot: 3.5}
+  XAGUSD:
+    risk_factors: {silver: 1, precious_metals: 1}
+    broker_symbol: XAGUSD_o
+    quote_schedule: *metals_schedule
+    aliases: [XAGUSD, XAGUSDm, SILVER]
+    currencies: [XAG, USD]
+    extra_news_currencies: [USD]
+    costs: {max_spread_points: 80, commission_per_lot: 5}
+  USCRUDE:
+    risk_factors: {oil: 1}
+    broker_symbol: USCRUDE
+    quote_schedule: *metals_schedule
+    aliases: [USCRUDE, USCrude, WTI]
+    currencies: [USD]
+    costs: {max_spread_points: 120, commission_per_lot: 0.5}
+  UKBRENT:
+    risk_factors: {oil: 1}
+    broker_symbol: UKBRENT
+    quote_schedule:
+      type: weekly_sessions
+      timezone: America/New_York
+      source: https://www.litefinance.org/company/detail/news/109315/
+      weekly:
+        0: [["00:00", "17:00"], ["20:00", "24:00"]]
+        1: [["00:00", "17:00"], ["20:00", "24:00"]]
+        2: [["00:00", "17:00"], ["20:00", "24:00"]]
+        3: [["00:00", "17:00"], ["20:00", "24:00"]]
+        4: [["00:00", "17:00"]]
+        5: []
+        6: [["18:00", "24:00"]]
+    aliases: [UKBRENT, UKBrent, BRENT]
+    currencies: [USD]
+    costs: {max_spread_points: 120, commission_per_lot: 0.5}
+  XNGUSD:
+    risk_factors: {natural_gas: 1}
+    broker_symbol: XNGUSD_o
+    quote_schedule:
+      type: weekly_sessions
+      timezone: America/New_York
+      source: https://www.litefinance.org/company/detail/news/109315/
+      weekly:
+        0: [["00:00", "24:00"]]
+        1: [["00:00", "24:00"]]
+        2: [["00:00", "24:00"]]
+        3: [["00:00", "24:00"]]
+        4: [["00:00", "17:00"]]
+        5: []
+        6: [["18:00", "24:00"]]
+    aliases: [XNGUSD, NATGAS]
+    currencies: [USD]
+    costs: {max_spread_points: 80, commission_per_lot: 5}
+  BTCUSD:
+    risk_factors: {crypto: 1}
+    broker_symbol: BTCUSD
+    quote_schedule: &crypto_schedule
+      type: weekly_sessions
+      timezone: UTC
+      source: https://www.litefinance.org/trading/trading-instruments/crypto/
+      weekly:
+        0: [["00:00", "24:00"]]
+        1: [["00:00", "24:00"]]
+        2: [["00:00", "24:00"]]
+        3: [["00:00", "24:00"]]
+        4: [["00:00", "24:00"]]
+        5: [["00:00", "24:00"]]
+        6: [["00:00", "24:00"]]
+    aliases: [BTCUSD, BTCUSDm]
+    currencies: [USD]
+    costs: {max_spread_points: 2000, slippage_points: 100, commission_per_lot: 0, commission_rate: 0.0012}
+  ETHUSD:
+    risk_factors: {crypto: 1}
+    broker_symbol: ETHUSD
+    quote_schedule: *crypto_schedule
+    aliases: [ETHUSD, ETHUSDm]
+    currencies: [USD]
+    costs: {max_spread_points: 500, slippage_points: 30, commission_per_lot: 0, commission_rate: 0.0012}
+  SOLUSD:
+    risk_factors: {crypto: 1}
+    broker_symbol: SOLUSD
+    quote_schedule: *crypto_schedule
+    aliases: [SOLUSD, SOLUSDm]
+    currencies: [USD]
+    costs: {max_spread_points: 150, slippage_points: 10, commission_per_lot: 0, commission_rate: 0.0012}

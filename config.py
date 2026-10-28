@@ -86,6 +86,8 @@ class AppConfig(BaseModel):
                     raise ValueError(f"Invalid {logical}.costs.{key}; use broker points or round-trip account currency/lot")
                 if key == "max_deviation_points" and int(value) != value:
                     raise ValueError("max_deviation_points must be an integer")
+                if key == "commission_rate" and value >= 1:
+                    raise ValueError("commission_rate must be a fraction below 1")
             factors = meta.get("risk_factors", {})
             if not isinstance(factors, dict) or any(not isinstance(k,str) or not k or isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v == 0 for k,v in factors.items()):
                 raise ValueError(f"Invalid portfolio risk_factors for {logical}")
