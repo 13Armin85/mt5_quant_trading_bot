@@ -61,5 +61,5 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {
 }
 if (-not $dashboardReady) { throw 'Dashboard is not ready. Check docker compose logs dashboard.' }
 Start-Process 'http://localhost:8501'
-Write-Host 'Login page: http://localhost:8501 -- choose Demo or Real, then connect your MT5 account.'
+Write-Host 'NoaTech is ready: http://localhost:8501 -- choose Demo or Real, then connect your MT5 account.'
 Write-Host 'Stop everything with Stop.cmd. No code or .env edits are required.'

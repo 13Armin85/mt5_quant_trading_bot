@@ -13,3 +13,4 @@ RUN useradd --uid 10001 --create-home trader \
 USER trader
 ENTRYPOINT ["python", "-m", "docker_runtime.entrypoint"]
 CMD ["run", "--mode", "live"]
+LABEL org.opencontainers.image.title="NoaTech" org.opencontainers.image.description="NoaTech MT5 trading workspace"

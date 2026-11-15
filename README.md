@@ -1,6 +1,8 @@
-# MT5 Quant Trading Bot
+# نواتک | NoaTech
 
-**ورود از مرورگر، بدون ویرایش تنظیمات:** روی `Start.cmd` دوبار کلیک کنید. صفحهٔ ورود در `http://localhost:8501` باز می‌شود؛ LiteFinance پیش‌فرض است. نوع حساب دمو/واقعی، شماره حساب MT5 و رمز معاملاتی را وارد کنید و «اتصال و شروع ربات» را بزنید. سرور و مسیر ترمینال از رابط قابل تنظیم‌اند. `Stop.cmd` برنامه را متوقف می‌کند. [راهنمای فارسی ورود](PORTAL_FA.md).
+میزکار فارسی تحلیل و پایش معاملات متاتریدر ۵؛ با ورود به حساب LiteFinance، دیده‌بان بازار، تحلیل استراتژی‌ها، اخبار و تاریخچهٔ اجراها.
+
+**ورود از مرورگر، بدون ویرایش تنظیمات:** روی `Start.cmd` دوبار کلیک کنید. صفحهٔ ورود در `http://localhost:8501` باز می‌شود؛ LiteFinance پیش‌فرض است. نوع حساب دمو/واقعی، شماره حساب MT5 و رمز معاملاتی را وارد کنید و «اتصال و ورود به نواتک» را بزنید. سرور و مسیر ترمینال از رابط قابل تنظیم‌اند. `Stop.cmd` برنامه را متوقف می‌کند. [راهنمای فارسی ورود](PORTAL_FA.md).
 
 See [the updated Persian execution/research guide](IMPROVEMENTS_FA.md) and [the engineering audit with real broker data](RESEARCH_AUDIT_FA.md). Candidates are ranked across symbols before entry; directional portfolio factors are independent of news mappings. The chronological backtester reports mark-to-market equity and resolution limits. Research experiments remain on `baseline`.
 

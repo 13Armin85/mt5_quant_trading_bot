@@ -12,4 +12,4 @@ if ($LASTEXITCODE -eq 0) {
 }
 & docker compose stop dashboard
 if ($LASTEXITCODE -ne 0) { throw 'Could not stop dashboard.' }
-Write-Host 'Application stopped. Broker positions retain their SL/TP.'
+Write-Host 'NoaTech stopped. Broker positions retain their SL/TP.'
