@@ -6,22 +6,6 @@ from dashboard.account_client import AccountPortalClient, PortalUnavailable
 from dashboard.theme import badge, brand, e, fa, icon
 
 
-WORKSPACE_ART = """
-<div class="nv-workspace-art" aria-hidden="true">
-<div class="nv-art-head"><span>نمایی از فضای تحلیل نواتک</span><div class="nv-art-dots"><i></i><i></i><i></i></div></div>
-<svg class="nv-art-graph" viewBox="0 0 450 132" fill="none">
-<defs><linearGradient id="nv-area" x1="220" y1="10" x2="220" y2="132" gradientUnits="userSpaceOnUse"><stop stop-color="#816BFF" stop-opacity=".14"/><stop offset="1" stop-color="#816BFF" stop-opacity="0"/></linearGradient></defs>
-<path d="M0 24H450M0 57H450M0 90H450M0 123H450" stroke="#242735" stroke-dasharray="2 6"/>
-<path d="M8 96C28 96 28 78 46 80S65 103 83 91 99 58 120 65 146 83 164 65 177 79 197 59 226 66 247 47 267 57 286 44 309 50 328 26 350 41 374 25 399 33 419 17 439 23" stroke="#816BFF" stroke-width="2.5"/>
-<path d="M8 96C28 96 28 78 46 80S65 103 83 91 99 58 120 65 146 83 164 65 177 79 197 59 226 66 247 47 267 57 286 44 309 50 328 26 350 41 374 25 399 33 419 17 439 23V132H8Z" fill="url(#nv-area)"/>
-<path d="M15 113 32 109 52 110 73 103 95 109 117 99 137 102 157 90 179 95 200 84 221 90 243 82 265 86 285 73 305 76 328 68 352 72 374 65 397 70 420 61 440 62" stroke="#808597" stroke-width="1.2" opacity=".55"/>
-<circle cx="439" cy="23" r="4" fill="#BCAFFF" stroke="#161824" stroke-width="3"/>
-</svg>
-<div class="nv-art-foot"><span>تحلیل چندبازه‌ای</span><span>پایش اخبار</span><span>مدیریت ریسک</span></div>
-</div>
-"""
-
-
 def portal_client(cfg):
     return AccountPortalClient(cfg.env.account_portal_url, cfg.env.account_portal_token_file)
 
@@ -144,4 +128,3 @@ def account_header(cfg, status):
             st.write("دمو، حساب آزمایشی بروکر است. برچسب LIVE یعنی سفارش‌ها از طریق متاتریدر اجرا می‌شوند؛ نوع حساب را در کارت بالا ببینید.")
             st.write("برای تعویض حساب، ابتدا خارج شوید و سپس اطلاعات حساب بعدی را وارد کنید.")
             st.write('برای توقف ترید باید وارد همین حساب شوید و دکمهٔ «توقف ترید» را بزنید. خروج یا پایان نشست مرورگر، موتور را متوقف نمی‌کند.')
-        st.markdown('<div class="nv-side-caption">NOATECH / MT5 WORKSPACE</div>', unsafe_allow_html=True)

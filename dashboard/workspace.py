@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 import streamlit as st
 
-from dashboard.theme import badge, e, empty_state, fa, icon, section, strategy_empty_state, theme_palette
+from dashboard.theme import badge, e, empty_state, fa, icon, section, strategy_empty_state
 
 
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -185,15 +185,14 @@ def analysis_panel(cfg, analyses):
     with content:
         section("مقایسهٔ استراتژی‌ها", "امتیازها میزان تطابق قواعد را نشان می‌دهند، نه احتمال سود.")
         if assessments:
-            colors = theme_palette()
             data = [{"استراتژی": translated(a.get("strategy"),STRATEGIES), "امتیاز": number(a.get("score")) or 0,
                 "جهت": translated(a.get("direction")), "شرایط ورود": "تأییدشده" if a.get("eligible") else "تأیید نشده"} for a in assessments]
             fig = go.Figure(go.Bar(x=[a["امتیاز"] for a in data], y=[a["استراتژی"] for a in data], orientation="h",
-                marker_color=[colors['accent'] if a.get("eligible") else colors['disabled'] for a in assessments],
+                marker_color=["#7964E8" if a.get("eligible") else "#858C99" for a in assessments],
                 hovertemplate="%{y}<br>امتیاز: %{x:.2f}<extra></extra>"))
             fig.update_layout(height=max(245, len(data)*26+40), margin=dict(l=10,r=20,t=10,b=20),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",color=colors['secondary'],size=11),
-                xaxis=dict(range=[0,1],gridcolor=colors['line'],zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",size=11),
+                xaxis=dict(range=[0,1],zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False}, key="noatech_strategy_chart")
             st.dataframe(data, width="stretch", hide_index=True)
         else:

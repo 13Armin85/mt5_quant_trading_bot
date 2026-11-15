@@ -43,7 +43,16 @@ def mark():
 
 def apply_theme():
     variables=';'.join(f'--nv-{name}:{value}' for name,value in theme_palette().items())
-    st.markdown('<style>'+stylesheet()+':root{'+variables+'}</style>', unsafe_allow_html=True)
+    presets=''.join(':root[data-noa-appearance="'+mode+'"]{'+
+        ';'.join(f'--nv-{name}:{value}' for name,value in values.items())+'}'
+        for mode,values in PALETTES.items())
+    st.markdown('<style>'+stylesheet()+':root{'+variables+'}'+presets+'</style>', unsafe_allow_html=True)
+    # Trusted, local presentation code only. Streamlit's theme context can lag
+    # behind the browser preference, especially on a login page without reruns.
+    # Observe the native app surface; do not modify native preference/storage,
+    # fetch data, access account widgets, or dispatch application requests.
+    st.html('<script>'+(ASSETS / 'appearance.js').read_text(encoding='utf-8')+'</script>',
+        unsafe_allow_javascript=True)
 
 
 def e(value):

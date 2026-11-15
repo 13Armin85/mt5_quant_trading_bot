@@ -5,7 +5,7 @@
   --nv-accent:#816BFF; --nv-mint:#35D6A0; --nv-danger:#FF6B7A; --nv-warning:#FFBD62;
   --nv-font:'Vazirmatn',Tahoma,sans-serif;
 }
-.stApp { background:var(--nv-bg); color:var(--nv-text); }
+.stApp { color:var(--nv-text); }
 html,body,[data-testid="stApp"] { font-family:var(--nv-font); }
 h1,h2,h3,h4,h5,h6,p,label,input,button,textarea,[data-testid="stMarkdownContainer"],[data-baseweb="select"],[role="tab"] { font-family:var(--nv-font)!important; }
 [data-testid="stMainBlockContainer"] { max-width:1560px; padding:4.5rem 2rem 2rem; }
@@ -217,4 +217,62 @@ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1180px
 }
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { transition:none!important; animation:none!important; scroll-behavior:auto!important; }
+}
+/* Minimal layout: let hierarchy and spacing carry the interface. */
+.nv-section .nv-eyebrow,.nv-page-heading .nv-eyebrow { display:none; }
+.nv-brand>svg { width:34px; height:34px; }
+.nv-brand strong { font-size:21px; font-weight:750; }
+.nv-brand small { border:0; padding-right:8px; }
+.nv-workspace-label { color:var(--nv-secondary); font-size:12px; font-weight:500; }
+.nv-topbar { padding-bottom:16px; margin-bottom:24px; }
+.nv-page-heading h1 { font-size:25px; font-weight:700; }
+.nv-page-heading p { color:var(--nv-muted); }
+.nv-clock { font-size:21px; font-weight:500; }
+.nv-badge { border-color:transparent; background:transparent; padding:4px 0; font-size:10px; }
+.nv-good { color:var(--nv-mint); }.nv-bad { color:var(--nv-danger); }.nv-warn { color:var(--nv-warning); }
+.nv-topbar-meta { gap:16px; }
+.nv-topbar-meta .nv-accent { color:var(--nv-secondary); }
+.nv-card-head>span:not(.nv-badge) { font-size:11px; }
+.nv-card-head svg { color:var(--nv-muted); width:17px; height:17px; }
+.nv-card h4 { font-size:14px; font-weight:600; }
+.nv-card-number { font-size:25px; font-weight:650; }
+.nv-brief { background:var(--nv-panel); border-color:var(--nv-line); padding:16px; }
+.nv-brief b { font-weight:600; }.nv-brief>svg { color:var(--nv-muted); }
+.nv-account-card { background:transparent; border:0; border-bottom:1px solid var(--nv-line); border-radius:0; padding:0 0 20px; }
+.nv-account-id { font-size:22px; font-weight:650; }
+.nv-section { margin:12px 0; }.nv-section h3 { font-size:14px; font-weight:650; }
+.nv-section p { color:var(--nv-muted); }
+.nv-empty { border-style:solid; background:var(--nv-panel); padding:28px 20px; }
+.nv-empty>div { width:36px; height:36px; border-radius:10px; background:var(--nv-panel-soft); color:var(--nv-muted); }
+.nv-strategy-empty-head { margin-bottom:20px; }
+.nv-strategy-empty-copy h4 { font-size:17px; font-weight:650; }
+.nv-strategy-symbol { border:0; background:var(--nv-panel-soft); color:var(--nv-muted); width:36px; height:36px; }
+.nv-strategy-empty-copy .nv-eyebrow { color:var(--nv-muted); }
+.nv-assessment-preview { margin:20px 0; border-color:var(--nv-line); }
+.nv-placeholder-line { background:var(--nv-line); }
+.nv-strategy-empty-note .nv-icon { color:var(--nv-muted); }
+.nv-footer { color:var(--nv-muted); margin-top:24px; }
+.nv-footer span:last-child { display:none; }
+.nv-login-intro { padding:40px 0 16px 40px; }
+.nv-login-intro .nv-eyebrow { color:var(--nv-link); letter-spacing:2px; }
+.nv-login-intro h1 { font-size:36px; font-weight:750; letter-spacing:-.7px; line-height:1.7; margin:20px 0 16px; }
+.nv-login-intro>p { font-size:13px; margin-bottom:32px; }
+.nv-login-features { display:flex; flex-direction:column; gap:20px; font-size:12px; color:var(--nv-secondary); }
+.nv-login-features>span { display:flex; align-items:center; gap:12px; }
+.nv-login-features svg { color:var(--nv-muted); }
+.nv-login-heading>span { display:none; }
+.nv-login-heading h2 { font-size:23px; font-weight:700; }
+.st-key-noatech_login_card { padding:28px; border-radius:12px; }
+.nv-secret-note svg { color:var(--nv-muted); }
+/* Expose the native, browser-persisted appearance menu on every page. */
+[data-testid="stMainMenuButton"] { position:fixed; left:16px; right:auto; top:8px; display:flex!important; gap:8px; min-height:40px; padding:8px 12px; border:1px solid var(--nv-line); border-radius:8px; background:var(--nv-panel); color:var(--nv-secondary); }
+[data-testid="stMainMenuButton"]::after { content:'روشن / تیره'; font-family:var(--nv-font); font-size:11px; white-space:nowrap; }
+[data-testid="stToolbar"] { right:auto!important; left:16px; }
+@media(max-width:768px) {
+ .nv-topbar { margin-bottom:20px; }.nv-topbar-meta { gap:10px; }
+ .nv-page-heading h1 { font-size:22px; }.nv-clock { font-size:18px; }
+ .nv-login-intro { padding:12px 0 8px; }.nv-login-intro h1 { font-size:28px; margin:0 0 12px; }
+ .nv-login-intro>p { margin-bottom:8px; }.nv-login-features,.nv-login-intro>.nv-eyebrow { display:none; }
+ .st-key-noatech_login_card { padding:20px; }.nv-login-heading h2 { font-size:21px; }
+ [data-testid="stToolbar"] { left:12px; }
 }
