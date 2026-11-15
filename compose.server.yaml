@@ -1,0 +1,89 @@
+name: noatech
+services:
+  trader:
+    image: noatech:server
+    user: "10001:${NOA_SERVICE_GID:-10001}"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    network_mode: host
+    command: ["run", "--mode", "live"]
+    environment:
+      MT5_BRIDGE_URL: http://127.0.0.1:18765
+      MT5_BRIDGE_TOKEN_FILE: /run/secrets/mt5_bridge_token
+      MT5_LOGIN: ${MT5_LOGIN:-}
+      MT5_SERVER: ${MT5_SERVER:-}
+      ENABLE_LIVE_TRADING: ${ENABLE_LIVE_TRADING:-false}
+      DATABASE_URL: sqlite:////app/data/trading_bot.db
+      NEWS_CACHE_DIR: /app/data/news_cache
+      RUNTIME_LOCK_PATH: /app/data/.bot.lock
+      KILL_SWITCH_PATH: /app/control/kill_switch.flag
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    secrets: [mt5_bridge_token]
+    volumes:
+      - ./.docker/data:/app/data
+      - ./.docker/control:/app/control
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 0.75
+    ulimits:
+      core: {soft: 0, hard: 0}
+      nofile: {soft: 4096, hard: 4096}
+    healthcheck:
+      test: ["CMD", "python", "-m", "docker_runtime.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  dashboard:
+    image: noatech:server
+    user: "10001:${NOA_SERVICE_GID:-10001}"
+    init: true
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["python", "-m", "streamlit"]
+    command: ["run", "dashboard/app.py", "--server.address=127.0.0.1", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    environment:
+      DATABASE_URL: sqlite:////app/data/trading_bot.db
+      ENABLE_LIVE_TRADING: "false"
+      ACCOUNT_PORTAL_URL: http://127.0.0.1:18766
+      ACCOUNT_PORTAL_TOKEN_FILE: /run/secrets/account_portal_token
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    secrets: [account_portal_token]
+    volumes:
+      - ./.docker/data:/app/data:ro
+      - ./config:/app/config:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+    ulimits:
+      core: {soft: 0, hard: 0}
+      nofile: {soft: 4096, hard: 4096}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+secrets:
+  mt5_bridge_token: {file: ./.docker/bridge.token}
+  account_portal_token: {file: ./.docker/portal.token}

@@ -151,6 +151,25 @@ def test_login_attempts_are_rate_limited(portal_http):
     assert len(runtime.logins) == 5
 
 
+def test_expired_session_cannot_read_account_or_stop_runtime(portal_http, monkeypatch):
+    portal, runtime, _, client = portal_http
+    session = client.request('/login', payload=payload())['session']
+    monkeypatch.setattr('core.account_portal.time.monotonic',
+                        lambda: portal.session_created_at + portal.SESSION_SECONDS + 1)
+    assert client.request('/status', session=session)['expired']
+    assert client.request('/logout', payload={}, session=session)['expired']
+    assert runtime.stops == 0
+
+
+def test_non_ascii_authentication_is_rejected_without_crashing(portal_http):
+    portal, _, _, _ = portal_http
+    assert not portal.authorized('Bearer رمز')
+    portal.session = 'session'
+    import time
+    portal.session_created_at = time.monotonic()
+    assert not portal.session_valid('نشست')
+
+
 def test_switching_accounts_blocks_open_exposure_and_uncertain_journal(tmp_path):
     runtime = DesktopRuntime(root=tmp_path)
     request = AccountLogin.parse(payload())

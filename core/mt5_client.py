@@ -60,10 +60,14 @@ class MT5Client:
                 normalized[field] = values.as_unit(unit).asi8
         return normalized
 
-    def initialize(self) -> bool:
+    def initialize(self, timeout=None) -> bool:
         if mt5 is None:
             raise MT5Error("MetaTrader5 package is unavailable on this platform.")
         kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = int(timeout)
+        if getattr(self.env, "mt5_portable", False):
+            kwargs["portable"] = True
         if self.env.mt5_path:
             kwargs["path"] = self.env.mt5_path
         if self.env.mt5_login:
@@ -98,9 +102,9 @@ class MT5Client:
             mt5.shutdown()
         self.connected = False
 
-    def authenticate(self) -> bool:
+    def authenticate(self, timeout=None) -> bool:
         """Explicitly validate a supplied password, even for a cached account."""
-        self.initialize()
+        self.initialize(timeout=timeout) if timeout is not None else self.initialize()
         if not mt5.login(int(self.env.mt5_login), password=self.env.mt5_password,
                          server=self.env.mt5_server, timeout=15000):
             self.shutdown()

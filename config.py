@@ -23,6 +23,7 @@ class EnvSettings(BaseSettings):
     mt5_password: str | None = Field(default=None, alias="MT5_PASSWORD", repr=False)
     mt5_server: str | None = Field(default=None, alias="MT5_SERVER")
     mt5_path: str | None = Field(default=None, alias="MT5_PATH")
+    mt5_portable: bool = Field(default=False, alias="MT5_PORTABLE")
     news_api_key: str | None = Field(default=None, alias="NEWS_API_KEY", repr=False)
     economic_api_key: str | None = Field(default=None, alias="ECONOMIC_API_KEY", repr=False)
     news_api_url: str | None = Field(default=None, alias="NEWS_API_URL")

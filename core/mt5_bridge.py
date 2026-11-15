@@ -42,7 +42,7 @@ class BridgeService:
         self.db.commit()
 
     def authorized(self, header):
-        return hmac.compare_digest(header or "", "Bearer " + self.token)
+        return hmac.compare_digest((header or "").encode("utf-8"), ("Bearer " + self.token).encode("utf-8"))
 
     def dispatch(self, payload):
         method, owner = payload["method"], payload["owner"]
@@ -148,6 +148,9 @@ class BridgeService:
 
 def handler_for(service):
     class Handler(BaseHTTPRequestHandler):
+        server_version = "NoaTech"
+        sys_version = ""
+
         def log_message(self, *_):
             pass  # Never log authorization or broker request/response bodies.
 
@@ -177,20 +180,24 @@ def handler_for(service):
                 self.reject(403)
                 return
             try:
+                if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) != 1:
+                    raise ValueError("Invalid request framing")
                 size = int(self.headers.get("Content-Length", 0))
                 if not 0 < size <= 4_000_000:
                     raise ValueError("Invalid request size")
                 payload = json.loads(self.rfile.read(size))
                 result = {"ok": True, "result": service.dispatch(payload)}
-            except (ValueError, KeyError, TypeError, AttributeError, MT5Error) as exc:
+            except (ValueError, KeyError, TypeError, AttributeError, MT5Error):
                 # Only our fixed validation messages are sent, never SDK exceptions.
-                result = {"ok": False, "error": str(exc) if isinstance(exc, (ValueError, MT5Error)) else "Invalid request"}
+                result = {"ok": False, "error": "Bridge request rejected; inspect connection and request parameters"}
             except Exception:
                 logger.error("Bridge operation failed; client must reconcile uncertain orders")
                 result = {"ok": False, "error": "Bridge unavailable; order outcome may be unknown"}
             body = json.dumps(result, allow_nan=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

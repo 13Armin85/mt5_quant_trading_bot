@@ -58,7 +58,8 @@ class DesktopRuntime:
         if account:
             env.update(MT5_LOGIN=str(account["login"]), MT5_SERVER=account["server"], ENABLE_LIVE_TRADING="true")
         try:
-            result = subprocess.run(["docker", "compose", "-f", str(self.root / "compose.yaml"), *args],
+            compose_file = os.environ.get("NOA_COMPOSE_FILE", str(self.root / "compose.yaml"))
+            result = subprocess.run(["docker", "compose", "-f", compose_file, *args],
                 cwd=self.root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=210)
         except (OSError, subprocess.TimeoutExpired):
             raise AccountError("Docker پاسخ نمی‌دهد. Docker Desktop را بررسی کنید و دوباره تلاش کنید.") from None
@@ -161,7 +162,7 @@ class DesktopRuntime:
         with (self.root / "logs" / "bridge.stdout.log").open("a", encoding="utf-8") as out, \
                 (self.root / "logs" / "bridge.stderr.log").open("a", encoding="utf-8") as err:
             self.bridge_process = subprocess.Popen(
-                [sys.executable, "-m", "core.mt5_bridge", "--allow-live", "--session-stdin"],
+                self.bridge_command(),
                 cwd=self.root, env=env, stdin=subprocess.PIPE, stdout=out, stderr=err,
                 text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             try:
@@ -186,8 +187,26 @@ class DesktopRuntime:
             time.sleep(.15)
         raise AccountError("زمان انتظار برای اتصال متاتریدر تمام شد؛ دوباره تلاش کنید.")
 
+    def bridge_command(self):
+        return [sys.executable, "-m", "core.mt5_bridge", "--allow-live", "--session-stdin"]
+
+    def resolve_terminal_path(self, request):
+        return terminal_path(request.terminal_path or self.cfg.env.mt5_path or "")
+
+    def authenticate_account(self, request, path):
+        env = self.cfg.env.model_copy(update={"mt5_login": request.login, "mt5_server": request.server,
+            "mt5_password": request.password, "mt5_path": path})
+        client = MT5Client(env, self.cfg.get("trading.mt5_time_zone", "UTC"))
+        try:
+            client.authenticate()
+            return verify_account(client.account_info(), client.terminal_info(), request)
+        except MT5Error:
+            raise AccountError("ورود ناموفق بود؛ شماره حساب، رمز معاملاتی و سرور را بررسی کنید.") from None
+        finally:
+            client.shutdown()
+
     def login(self, request):
-        path = terminal_path(request.terminal_path or self.cfg.env.mt5_path or "")
+        path = self.resolve_terminal_path(request)
         if not self.account and not self.bridge_running():
             self.cfg.env.mt5_path = path
         self.check_switch(self.snapshot(), request)
@@ -202,16 +221,7 @@ class DesktopRuntime:
                 self.compose("start", "trader")
             raise
         self.stop_bridge()
-        env = self.cfg.env.model_copy(update={"mt5_login": request.login, "mt5_server": request.server,
-            "mt5_password": request.password, "mt5_path": path})
-        client = MT5Client(env, self.cfg.get("trading.mt5_time_zone", "UTC"))
-        try:
-            client.authenticate()
-            account = verify_account(client.account_info(), client.terminal_info(), request)
-        except MT5Error:
-            raise AccountError("ورود ناموفق بود؛ شماره حساب، رمز معاملاتی و سرور را بررسی کنید.") from None
-        finally:
-            client.shutdown()
+        account = self.authenticate_account(request, path)
         self.account = account
         self.cfg.env.mt5_path = path
         self.started_at = time.time()
@@ -221,6 +231,8 @@ class DesktopRuntime:
         except Exception:
             self.stop_bridge()
             raise
+        if os.environ.get("NOA_AUTO_LOGIN_FLAG"):
+            Path(os.environ["NOA_AUTO_LOGIN_FLAG"]).touch()
         return dict(account, started_at=self.started_at, scope=self.scope())
 
     def scope(self):
@@ -247,22 +259,30 @@ class DesktopRuntime:
         self.compose("stop", "trader")
         self.stop_bridge()
         self.started_at = None
+        if os.environ.get("NOA_AUTO_LOGIN_FLAG"):
+            Path(os.environ["NOA_AUTO_LOGIN_FLAG"]).unlink(missing_ok=True)
 
 
 class AccountPortal:
-    def __init__(self, token, runtime):
+    SESSION_SECONDS = 8 * 60 * 60
+
+    def __init__(self, token, runtime, login_guard=None):
         if len(token) < 32:
             raise ValueError("Portal token must be at least 32 characters")
         self.token, self.runtime = token, runtime
         self.session = None
+        self.session_created_at = 0.0
         self.attempts = deque()
         self.stop_requested = False
+        self.login_guard = login_guard
 
     def authorized(self, header):
-        return hmac.compare_digest(header or "", "Bearer " + self.token)
+        return hmac.compare_digest((header or "").encode("utf-8"), ("Bearer " + self.token).encode("utf-8"))
 
     def session_valid(self, session):
-        return bool(self.session and session and hmac.compare_digest(self.session, session))
+        if time.monotonic() - self.session_created_at >= self.SESSION_SECONDS:
+            self.session = None
+        return bool(self.session and session and hmac.compare_digest(self.session.encode("utf-8"), session.encode("utf-8")))
 
     def dispatch(self, path, payload, session):
         if path == "/status":
@@ -277,9 +297,12 @@ class AccountPortal:
                 raise AccountError("تعداد تلاش‌های ورود زیاد است؛ یک دقیقه صبر کنید.")
             self.attempts.append(now)
             request = AccountLogin.parse(payload)
+            if self.login_guard:
+                self.login_guard(request)
             self.session = None
             account = self.runtime.login(request)
             self.session = secrets.token_urlsafe(32)
+            self.session_created_at = time.monotonic()
             return {"ok": True, "session": self.session, "account": account}
         if path in {"/logout", "/shutdown"}:
             self.runtime.logout()
@@ -291,14 +314,34 @@ class AccountPortal:
 
 def handler_for(portal):
     class Handler(BaseHTTPRequestHandler):
+        server_version = "NoaTech"
+        sys_version = ""
+
         def log_message(self, *_):
             pass
 
         def respond(self, status, data):
+            # Drain small rejected POSTs before closing; Windows can otherwise
+            # reset the connection before the client receives its 401/403.
+            if self.command == "POST" and not getattr(self, "body_consumed", False):
+                try:
+                    size = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    size = 0
+                if 0 < size <= 65536:
+                    previous_timeout = self.connection.gettimeout()
+                    try:
+                        self.connection.settimeout(.25)
+                        self.rfile.read(size)
+                    except OSError:
+                        pass
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             body = json.dumps(data, ensure_ascii=True).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Connection", "close")
             self.end_headers()
@@ -320,10 +363,16 @@ def handler_for(portal):
             try:
                 payload = None
                 if post:
+                    if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) != 1:
+                        raise AccountError("Invalid request framing")
                     size = int(self.headers.get("Content-Length", 0))
                     if not 0 < size <= 16384:
                         raise AccountError("درخواست ورود معتبر نیست.")
-                    payload = json.loads(self.rfile.read(size))
+                    raw = self.rfile.read(size)
+                    self.body_consumed = True
+                    if len(raw) != size:
+                        raise AccountError("Incomplete request")
+                    payload = json.loads(raw)
                 result = portal.dispatch(self.path, payload, session)
                 self.respond(200, result)
             except AccountError as exc:
@@ -368,7 +417,15 @@ def main():
             raise SystemExit(1) from None
     cfg.validate_runtime()
     with RuntimeLock(ROOT / ".docker" / "portal.lock"):
-        portal = AccountPortal(token, DesktopRuntime(cfg))
+        runtime = DesktopRuntime(cfg)
+        if os.environ.get("NOA_MT5_RUNTIME") == "wine":
+            from core.wine_runtime import WineRuntime
+            runtime = WineRuntime(cfg)
+        guard = None
+        if os.environ.get("NOA_PORTAL_ACCESS_FILE"):
+            from core.portal_access import account_guard
+            guard = account_guard(os.environ["NOA_PORTAL_ACCESS_FILE"])
+        portal = AccountPortal(token, runtime, guard)
         with PortalServer(("127.0.0.1", 18766), handler_for(portal)) as server:
             print("Account portal ready on 127.0.0.1:18766; waiting for browser login.", flush=True)
             server.serve_forever()

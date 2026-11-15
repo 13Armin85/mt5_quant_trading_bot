@@ -60,6 +60,7 @@ def test_typed_wire_round_trip_preserves_structs_arrays_dates():
 def test_authentication_allowlist_and_read_only_session(service, broker):
     assert service.authorized("Bearer " + service.token)
     assert not service.authorized(None) and not service.authorized("Bearer wrong")
+    assert not service.authorized("Bearer رمز")
     owner = connect(service, trading=False)
     with pytest.raises(ValueError, match="lease"):
         call(service, owner, "order_send", order())
@@ -204,3 +205,27 @@ def test_bridge_shutdown_requires_released_live_lease(service):
         call(service, admin, "stop_bridge")
     call(service, owner, "disconnect")
     assert call(service, admin, "stop_bridge") is True
+
+
+@pytest.mark.parametrize('error_type', [ValueError, MT5Error])
+def test_http_bridge_does_not_reflect_backend_secrets(service, monkeypatch, error_type):
+    from threading import Thread
+    secret = 'sensitive-backend-value'
+    def fail(_):
+        raise error_type(secret)
+    monkeypatch.setattr(service, 'dispatch', fail)
+    server = BridgeServer(('127.0.0.1', 0), handler_for(service))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with httpx.Client(trust_env=False) as http:
+            response = http.post(f'http://127.0.0.1:{server.server_port}/rpc',
+                headers={'Authorization':'Bearer '+service.token}, json={})
+        assert response.status_code == 200
+        assert not response.json()['ok']
+        assert secret not in response.text
+        assert response.headers['Cache-Control'] == 'no-store'
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
