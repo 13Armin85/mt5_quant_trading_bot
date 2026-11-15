@@ -14,8 +14,8 @@ from core.mt5_remote import RemoteMT5Client
 from core.runtime_lock import RuntimeLock
 
 
-def prepare(cfg):
-    if not cfg.env.enable_live_trading:
+def prepare(cfg, *, require_live=True):
+    if require_live and not cfg.env.enable_live_trading:
         raise ValueError("Set ENABLE_LIVE_TRADING=true in .env to authorize LIVE startup")
     base = ROOT / ".docker"
     for path in (base, base / "data", base / "control", ROOT / "logs", ROOT / "reports"):

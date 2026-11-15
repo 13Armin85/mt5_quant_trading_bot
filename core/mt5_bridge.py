@@ -12,6 +12,7 @@ import math
 import sqlite3
 import time
 import uuid
+import sys
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -210,8 +211,16 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18765)
     parser.add_argument("--allow-live", action="store_true")
+    parser.add_argument("--session-stdin", action="store_true", help="Receive portal credentials in memory, never through arguments/files")
     args = parser.parse_args()
     cfg = load_config(); cfg.validate_runtime()
+    portal_request = None
+    if args.session_stdin:
+        from core.account_login import AccountLogin
+        portal_request = AccountLogin.parse(json.loads(sys.stdin.readline(16385)))
+        cfg.env = cfg.env.model_copy(update={"mt5_login": portal_request.login,
+            "mt5_password": portal_request.password, "mt5_server": portal_request.server,
+            "mt5_path": portal_request.terminal_path, "enable_live_trading": args.allow_live})
     if args.allow_live and not cfg.env.enable_live_trading:
         raise ValueError("Set ENABLE_LIVE_TRADING=true explicitly before starting a LIVE bridge")
     token = Path(cfg.env.mt5_bridge_token_file).read_text().strip()
@@ -220,6 +229,10 @@ def main():
     client = MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC"))
     # The native bot uses the same lock: local and Docker LIVE cannot run together.
     with RuntimeLock(cfg.env.runtime_lock_path):
+        if portal_request is not None:
+            from core.account_login import verify_account
+            client.initialize()
+            verify_account(client.account_info(), client.terminal_info(), portal_request)
         service = BridgeService(client, token, journal, args.allow_live, cfg.get("trading.magic", 260912))
         try:
             with BridgeServer((args.bind, args.port), handler_for(service)) as server:

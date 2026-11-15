@@ -7,22 +7,38 @@ import streamlit as st
 
 from config import load_config
 from monitoring.runtime_view import read_runtime
+from dashboard.login_view import authenticate, account_header, portal_client
+from dashboard.account_client import PortalUnavailable
 
 
 st.set_page_config(page_title="MT5 Quant Bot", layout="wide")
 cfg = load_config()
+account_status = authenticate(cfg)
+account_header(cfg, account_status)
 st.title("MT5 Quant Trading Bot")
-st.caption("Read-only monitor · refreshes every 5 seconds · chart analysis and news run together in the trading engine")
+st.caption("داشبورد معاملات · به‌روزرسانی هر ۵ ثانیه · تحلیل بازار و اخبار در کنار مدیریت موقعیت‌ها")
 
 
 @st.fragment(run_every=5)
 def render():
     try:
-        view = read_runtime(cfg.env.database_url)
+        status = portal_client(cfg).request("/status", session=st.session_state.get("account_session"))
+        if not status.get("ok"):
+            st.session_state.pop("account_session", None)
+            st.rerun()
+        if not status.get("connected"):
+            st.warning("اتصال متاتریدر در دسترس نیست. برای اتصال مجدد، از منوی مدیریت حساب خارج و دوباره وارد شوید.")
+    except PortalUnavailable as exc:
+        st.error(str(exc))
+        return
+    try:
+        view = read_runtime(cfg.env.database_url, scope=status.get("scope"), since=status.get("started_at"))
     except (OSError, sqlite3.Error, ValueError):
-        st.info("Waiting for the trading engine journal. Start the LIVE engine with Start-Live.cmd on Windows.")
+        st.info("موتور در حال آماده‌سازی ژورنال است؛ وضعیت چند ثانیهٔ دیگر به‌روز می‌شود.")
         return
     heartbeat = view["heartbeat"] or {}
+    if heartbeat.get("phase") == "starting":
+        st.info("حساب متصل است؛ موتور در حال آماده‌سازی داده‌های بازار و تحلیل اولیه است.")
     clocks=heartbeat.get("clocks") or {}
     if clocks:
         st.caption(f"UTC: {clocks.get('utc','')} · Server: {clocks.get('server','')} · Tehran: {clocks.get('tehran','')}")

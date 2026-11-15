@@ -59,3 +59,15 @@ def test_dashboard_reads_journal_without_creating_missing_database(tmp_path):
     assert not view["trades"]
 
 
+def test_dashboard_hides_other_account_and_previous_session_snapshots(tmp_path):
+    path = tmp_path / "scope.db"
+    repo = Repository("sqlite:///" + str(path))
+    now = datetime.now(timezone.utc)
+    repo.set_state("heartbeat", {"scope":"LIVE:first:123", "time":now.isoformat(), "connected":True})
+    repo.set_state("analysis:EURUSD", {"symbol":"EURUSD", "updated_at":now.isoformat()})
+    hidden = read_runtime("sqlite:///" + str(path), scope="LIVE:second:123")
+    assert hidden["heartbeat"] is None and hidden["analyses"] == []
+    fresh_session = read_runtime("sqlite:///" + str(path), scope="LIVE:first:123", since=now.timestamp()+1)
+    assert fresh_session["heartbeat"] is None and fresh_session["analyses"] == []
+
+

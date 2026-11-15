@@ -70,6 +70,9 @@ class TradingEngine:
     def run_forever(self) -> None:
         poll = float(self.cfg.get("trading.poll_seconds", 2))
         symbols = list(self.cfg.symbols.get("symbols", {}).keys())
+        self.repository.set_state("heartbeat", {"time": datetime.now(timezone.utc).isoformat(),
+            "connected": self.client.health_check(), "mode": self.execution.mode.value,
+            "scope": self.execution.scope, "phase": "starting"})
         logger.info("Trading engine started symbols={}", symbols)
         try:
             if hasattr(self.news_filter, "start_background"):

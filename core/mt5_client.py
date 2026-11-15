@@ -98,6 +98,18 @@ class MT5Client:
             mt5.shutdown()
         self.connected = False
 
+    def authenticate(self) -> bool:
+        """Explicitly validate a supplied password, even for a cached account."""
+        self.initialize()
+        if not mt5.login(int(self.env.mt5_login), password=self.env.mt5_password,
+                         server=self.env.mt5_server, timeout=15000):
+            self.shutdown()
+            raise MT5Error("MT5 authentication failed")
+        if not self.health_check():
+            self.shutdown()
+            raise MT5Error("MT5 account/terminal unavailable")
+        return True
+
     def reconnect(self, attempts=3, delay=5) -> bool:
         for attempt in range(attempts):
             self.shutdown()

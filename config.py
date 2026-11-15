@@ -32,6 +32,8 @@ class EnvSettings(BaseSettings):
     enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
     mt5_bridge_url: str | None = Field(default=None, alias="MT5_BRIDGE_URL")
     mt5_bridge_token_file: str = Field(default=str(ROOT / ".docker" / "bridge.token"), alias="MT5_BRIDGE_TOKEN_FILE")
+    account_portal_url: str = Field(default="http://127.0.0.1:18766", alias="ACCOUNT_PORTAL_URL")
+    account_portal_token_file: str = Field(default=str(ROOT / ".docker" / "portal.token"), alias="ACCOUNT_PORTAL_TOKEN_FILE")
     runtime_lock_path: str = Field(default=str(ROOT / ".bot.lock"), alias="RUNTIME_LOCK_PATH")
     kill_switch_path: str | None = Field(default=None, alias="KILL_SWITCH_PATH")
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")

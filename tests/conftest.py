@@ -17,6 +17,7 @@ def prohibit_real_mt5(monkeypatch):
         def forbidden(*args, **kwargs):
             raise AssertionError("Real MT5 access is forbidden in automated tests")
         monkeypatch.setattr(module.mt5, "initialize", forbidden)
+        monkeypatch.setattr(module.mt5, "login", forbidden)
         monkeypatch.setattr(module.mt5, "order_send", forbidden)
 
 

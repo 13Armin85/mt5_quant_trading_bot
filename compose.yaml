@@ -57,6 +57,10 @@ services:
     environment:
       DATABASE_URL: sqlite:////app/data/trading_bot.db
       ENABLE_LIVE_TRADING: "false"
+      ACCOUNT_PORTAL_URL: http://host.docker.internal:18766
+      ACCOUNT_PORTAL_TOKEN_FILE: /run/secrets/account_portal_token
+    secrets:
+      - account_portal_token
     volumes:
       - ./.docker/data:/app/data:ro
       - ./config:/app/config:ro
@@ -75,3 +79,5 @@ services:
 secrets:
   mt5_bridge_token:
     file: ./.docker/bridge.token
+  account_portal_token:
+    file: ./.docker/portal.token
