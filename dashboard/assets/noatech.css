@@ -276,3 +276,50 @@ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1180px
  .st-key-noatech_login_card { padding:20px; }.nv-login-heading h2 { font-size:21px; }
  [data-testid="stToolbar"] { left:12px; }
 }
+/* Account entry: a focused form and a quiet product introduction. */
+body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1140px; padding-top:5rem; }
+.nv-login-topbar { border:0; margin-bottom:40px; padding-bottom:0; }
+.st-key-noatech_login_card { max-width:480px; margin-inline:auto; padding:32px; border-radius:18px; box-shadow:0 12px 40px #00000005; }
+.nv-login-heading { margin-bottom:24px; }
+.nv-login-form-kicker { color:var(--nv-link); font-size:11px; font-weight:500; margin-bottom:10px; }
+.nv-login-heading h2 { font-size:24px; line-height:1.6; letter-spacing:-.5px; margin-bottom:6px; }
+.nv-login-heading p { font-size:12px; color:var(--nv-secondary); }
+.nv-login-broker { display:flex; align-items:center; gap:12px; direction:rtl; padding:14px 16px; background:var(--nv-panel-soft); border-radius:10px; margin-bottom:8px; }
+.nv-broker-emblem { display:grid; place-items:center; width:36px; height:36px; border:1px solid var(--nv-line); border-radius:9px; background:var(--nv-panel); color:var(--nv-text); font:700 18px Arial,sans-serif; }
+.nv-login-broker>div { flex:1; display:flex; flex-direction:column; gap:4px; text-align:right; }
+.nv-login-broker b { color:var(--nv-text); font:600 13px Arial,sans-serif; }
+.nv-login-broker>div>span { color:var(--nv-secondary); font-size:10px; }
+.nv-login-broker>.nv-icon { color:var(--nv-muted); }
+.st-key-noatech_login_card [data-testid="stTextInputRootElement"] { min-height:48px; }
+.st-key-noatech_login_card [data-testid="stTextInputRootElement"] input { height:48px; font-size:13px; }
+.st-key-noatech_login_card [data-testid="stFormSubmitButton"] button { min-height:48px; border-radius:9px; margin-top:10px; }
+.st-key-noatech_login_card [data-testid="stCaptionContainer"] { font-size:11px; color:var(--nv-secondary); line-height:2; }
+.st-key-noatech_login_card [data-testid="stExpander"] details { background:transparent; }
+.nv-secret-note { border-top:1px solid var(--nv-line); padding-top:18px; margin-top:4px; font-size:10px; }
+.nv-login-intro { padding:44px 40px 20px 12px; max-width:490px; }
+.nv-login-kicker { display:block; font-size:11px; color:var(--nv-muted); margin-bottom:20px; }
+.nv-login-intro h1 { font-size:34px; font-weight:750; line-height:1.7; letter-spacing:-.8px; margin:0 0 16px; }
+.nv-login-intro h1>span { color:var(--nv-secondary); }
+.nv-login-intro>p { font-size:13px; line-height:2.1; max-width:340px; margin-bottom:32px; }
+.nv-login-benefits { display:flex; flex-direction:column; gap:24px; }
+.nv-login-benefits>div { display:flex; align-items:flex-start; gap:12px; }
+.nv-login-benefits .nv-icon { color:var(--nv-muted); margin-top:3px; }
+.nv-login-benefits>div>div { display:flex; flex-direction:column; gap:5px; }
+.nv-login-benefits b { font-size:12px; font-weight:600; color:var(--nv-text); }
+.nv-login-benefits span { font-size:11px; color:var(--nv-secondary); line-height:1.9; }
+.nv-login-guide { display:flex; align-items:flex-start; gap:8px; color:var(--nv-muted); border-top:1px solid var(--nv-line); margin-top:32px; padding-top:20px; font-size:10px; line-height:2; }
+.nv-login-guide svg { margin-top:3px; }
+body:has(.nv-login-page) .nv-footer { border:0; margin-top:32px; padding-top:0; justify-content:center; font-size:10px; }
+@media(max-width:1100px) { .nv-login-intro { padding-right:20px; }.nv-login-intro h1 { font-size:30px; }.st-key-noatech_login_card { padding:28px; } }
+@media(max-width:768px) {
+ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:520px; padding-top:4.5rem; }
+ .nv-login-topbar { margin-bottom:24px; }
+ .st-key-noatech_login_card { width:100%; max-width:none; padding:24px 20px; border-radius:14px; }
+ .nv-login-heading h2 { font-size:22px; }.nv-login-heading { margin-bottom:20px; }
+ .nv-login-intro { display:none; }
+ .nv-login-kicker,.nv-login-benefits,.nv-login-guide { display:none; }
+ .nv-login-intro h1 { font-size:20px; margin:0 0 8px; line-height:1.8; }
+ .nv-login-intro h1 br { display:none; }.nv-login-intro h1>span::before { content:' '; }
+ .nv-login-intro>p { max-width:none; font-size:11px; margin:0; }
+ body:has(.nv-login-page) .nv-footer { margin-top:24px; }
+}

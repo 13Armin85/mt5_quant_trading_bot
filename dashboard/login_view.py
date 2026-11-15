@@ -34,16 +34,16 @@ def authenticate(cfg):
         connection_error = "سرویس اتصال آماده نیست. برای شروع، فایل Start.cmd را باز کنید."
     st.markdown('<span class="nv-login-page"></span>', unsafe_allow_html=True)
     state = badge("آمادهٔ اتصال" if ready else "در انتظار راه‌اندازی", "good" if ready else "warn")
-    st.markdown(f'<div class="nv-topbar">{brand()}<div class="nv-topbar-meta">{state}<span>متصل به دنیای MetaTrader 5</span></div></div>', unsafe_allow_html=True)
-    introduction, form_column = st.columns([1.08, 1], gap="large")
+    st.markdown(f'<div class="nv-topbar nv-login-topbar">{brand("ورود به میزکار")}<div class="nv-topbar-meta" role="status">{state}</div></div>', unsafe_allow_html=True)
+    form_column, introduction = st.columns([1, 1.05], gap="large")
     with introduction:
-        st.markdown(f'<div class="nv-login-intro"><span class="nv-eyebrow">NOA</span><h1>معاملات شما،<br>روشن و منظم.</h1><p>حساب، تحلیل بازار و وضعیت ربات را<br>در یک فضای ساده دنبال کنید.</p><div class="nv-login-features"><span>{icon("wallet",18)}نمای یکپارچهٔ حساب</span><span>{icon("activity",18)}پایش خودکار بازار</span><span>{icon("shield",18)}کنترل روشنِ ریسک</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="nv-login-intro"><span class="nv-login-kicker">میزکار معاملاتی NOA</span><h1>حساب شما.<br><span>فضای معاملاتی شما.</span></h1><p>به حساب LiteFinance خود متصل شوید و تحلیل بازار، وضعیت ربات و معاملات را یک‌جا دنبال کنید.</p><div class="nv-login-benefits"><div>{icon("wallet",19)}<div><b>حساب مستقل</b><span>داده‌ها و محیط متاتریدر مخصوص حساب شما</span></div></div><div>{icon("activity",19)}<div><b>پایش پیوسته</b><span>ادامهٔ کار ربات، حتی وقتی پنل را می‌بندید</span></div></div><div>{icon("shield",19)}<div><b>کنترل در دست شما</b><span>شروع و توقف ترید از داخل حساب</span></div></div></div><div class="nv-login-guide">{icon("link",15)}<span>برای ورود، شماره حساب و رمز معاملاتی MT5 را آماده کنید.</span></div></div>', unsafe_allow_html=True)
     with form_column:
         with st.container(key="noatech_login_card"):
-            st.markdown(f'<div class="nv-login-heading"><span>{icon("link",16)} یک اتصال، یک میزکار</span><h2>به نواتک خوش آمدید</h2><p>برای ورود، اطلاعات حساب معاملاتی MT5 خود را وارد کنید.</p></div>', unsafe_allow_html=True)
+            st.markdown('<div class="nv-login-heading"><div class="nv-login-form-kicker">ورود به حساب</div><h2>به نواتک خوش آمدید</h2><p>اطلاعات حساب MT5 خود را وارد کنید.</p></div>', unsafe_allow_html=True)
             if connection_error:
                 st.info(connection_error)
-            st.selectbox("بروکر", ["LiteFinance"], key="login_broker", disabled=True)
+            st.markdown(f'<div class="nv-login-broker"><span class="nv-broker-emblem">L</span><div><b dir="ltr">LiteFinance</b><span>بروکر حساب شما · MetaTrader 5</span></div>{icon("globe",17)}</div>', unsafe_allow_html=True)
             kind = st.radio("نوع حساب", ["demo", "real"], horizontal=True,
                 format_func=lambda item: "حساب دمو" if item == "demo" else "حساب واقعی", key="login_account_type", width="stretch")
             with st.form("account_login", clear_on_submit=True, border=False):
