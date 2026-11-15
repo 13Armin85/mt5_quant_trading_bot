@@ -88,3 +88,71 @@ def test_server_bridge_cannot_trade_without_root_provisioned_flag(monkeypatch,tm
     flag.touch()
     assert runtime.trading_enabled()
     assert '--allow-live' in runtime.bridge_command()
+
+
+def test_cold_snapshot_never_launches_terminal_without_credentials(monkeypatch,tmp_path):
+    runtime=WineRuntime(root=tmp_path)
+    monkeypatch.setattr(runtime,'bridge_running',lambda:False)
+    monkeypatch.setattr(runtime,'terminal_running',lambda:False)
+    def forbidden(*a):raise AssertionError('Snapshot must not launch a logged-out terminal')
+    monkeypatch.setattr(runtime,'native_probe',forbidden)
+    assert runtime.snapshot() is None
+    runtime.account={'login':12345}
+    with pytest.raises(AccountError):runtime.snapshot()
+
+
+def test_cold_start_uses_temporary_credentials_with_trading_disabled(monkeypatch,tmp_path):
+    runtime=WineRuntime(root=tmp_path)
+    monkeypatch.setattr(runtime,'wait_terminal_ready',lambda request:None)
+    directory=tmp_path/'ram'
+    directory.mkdir()
+    monkeypatch.setenv('NOA_MT5_STARTUP_DIR',str(directory))
+    monkeypatch.setenv('NOA_WINE_PYTHON','/windows/python.exe')
+    monkeypatch.setattr(runtime,'terminal_running',lambda:False)
+    calls=[]
+    monkeypatch.setattr('core.wine_runtime.subprocess.Popen',lambda command,**kw:calls.append(command))
+    with runtime.terminal_startup(request(),r'C:\MT5\terminal64.exe'):
+        data=next(directory.glob('*.ini')).read_text(encoding='utf-16')
+        assert 'Login=12345' in data and 'Password=test-only-password' in data
+        assert 'AllowLiveTrading=0' in data and 'Account=1' in data
+        assert 'test-only-password' not in repr(calls)
+    assert not list(directory.iterdir())
+
+
+def test_temporary_startup_credentials_are_removed_after_failure(monkeypatch,tmp_path):
+    runtime=WineRuntime(root=tmp_path)
+    monkeypatch.setattr(runtime,'wait_terminal_ready',lambda request:None)
+    monkeypatch.setenv('NOA_MT5_STARTUP_DIR',str(tmp_path))
+    monkeypatch.setenv('NOA_WINE_PYTHON','/windows/python.exe')
+    monkeypatch.setattr(runtime,'terminal_running',lambda:False)
+    monkeypatch.setattr('core.wine_runtime.subprocess.Popen',lambda *a,**kw:None)
+    with pytest.raises(RuntimeError):
+        with runtime.terminal_startup(request(),r'C:\MT5\terminal64.exe'):
+            raise RuntimeError('Authentication failed')
+    assert not list(tmp_path.glob('owner-*.ini'))
+
+
+def test_demo_session_authorization_follows_actual_sdk_identity_verification(monkeypatch,tmp_path):
+    runtime=WineRuntime(root=tmp_path)
+    monkeypatch.setattr(runtime,'trading_enabled',lambda:True)
+    events=[]
+    def probe(action,payload):
+        events.append(('authenticate',payload['_trading_authorized']))
+        return {'login':12345,'server':'LiteFinance-MT5-Demo','account_type':'demo',
+            'trade_allowed':payload['_trading_authorized']}
+    monkeypatch.setattr(runtime,'native_probe',probe)
+    monkeypatch.setattr(runtime,'authorize_demo_session',lambda r,a:events.append(('verified-demo',a['login'])))
+    assert runtime.authenticate_account(request(),r'C:\MT5\terminal64.exe')['trade_allowed']
+    assert events==[('authenticate',False),('verified-demo',12345),('authenticate',True)]
+
+
+@pytest.mark.parametrize('updates',[{'login':99999},{'account_type':'real'},{'server':'LiteFinance-MT5-Live'}])
+def test_session_permission_change_rejects_any_non_owner_or_non_demo_account(monkeypatch,tmp_path,updates):
+    runtime=WineRuntime(root=tmp_path)
+    monkeypatch.setattr(runtime,'trading_enabled',lambda:True)
+    account={'login':12345,'server':'LiteFinance-MT5-Demo','account_type':'demo',
+        'account_trade_allowed':True,'expert_allowed':True,'python_api_disabled':False}
+    account.update(updates)
+    def forbidden(*a,**kw):raise AssertionError('No UI event is permitted for another account')
+    monkeypatch.setattr('core.wine_runtime.subprocess.run',forbidden)
+    with pytest.raises(AccountError):runtime.authorize_demo_session(request(),account)

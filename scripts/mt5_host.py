@@ -25,6 +25,10 @@ def main():
             client.authenticate(timeout=60000)
             result=verify_account(client.account_info(),client.terminal_info(),request,
                 require_trading=payload.get('_trading_authorized') is True)
+            account,terminal=client.account_info(),client.terminal_info()
+            result.update(account_trade_allowed=bool(account.trade_allowed),
+                expert_allowed=bool(account.trade_expert),
+                python_api_disabled=bool(terminal.tradeapi_disabled))
         else:
             try:
                 client.initialize(timeout=15000)
