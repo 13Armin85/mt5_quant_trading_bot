@@ -1,0 +1,6 @@
+# Security fixes applied over the transferred dependency image.
+python-dotenv==1.2.2
+pytest==9.0.3
+pip==26.2.1
+streamlit==1.67.0
+Pillow==13.0.0

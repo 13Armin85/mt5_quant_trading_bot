@@ -44,7 +44,7 @@ class AccountLogin:
         return cls(int(digits), password, kind, server.strip(), path.strip())
 
 
-def verify_account(account, terminal, request):
+def verify_account(account, terminal, request, *, require_trading=True):
     if account is None or terminal is None or not terminal.connected:
         raise AccountError("اتصال به سرور برقرار نشد. اینترنت و نام سرور را بررسی کنید.")
     if int(account.login) != request.login or str(account.server) != request.server:
@@ -52,10 +52,11 @@ def verify_account(account, terminal, request):
     expected = 0 if request.account_type == "demo" else 2
     if int(account.trade_mode) != expected:
         raise AccountError("نوع واقعی حساب با انتخاب دمو/واقعی تطابق ندارد؛ اتصال متوقف شد.")
-    if not account.trade_allowed or not account.trade_expert:
+    if require_trading and (not account.trade_allowed or not account.trade_expert):
         raise AccountError("این حساب اجازهٔ معامله ندارد. از رمز معاملاتی به‌جای رمز سرمایه‌گذار استفاده کنید.")
-    if not terminal.trade_allowed or terminal.tradeapi_disabled:
+    if require_trading and (not terminal.trade_allowed or terminal.tradeapi_disabled):
         raise AccountError("در MT5، Algo Trading را روشن و گزینهٔ Disable automated trading via external Python API را غیرفعال کنید.")
     return {"login": int(account.login), "server": str(account.server), "broker": "LiteFinance",
             "account_type": request.account_type, "currency": str(account.currency),
-            "trade_allowed": True}
+            "trade_allowed": bool(account.trade_allowed and account.trade_expert
+                and terminal.trade_allowed and not terminal.tradeapi_disabled)}

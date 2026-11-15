@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import sqlite3
 import time
 import uuid
@@ -231,7 +232,7 @@ def main():
     if args.allow_live and not cfg.env.enable_live_trading:
         raise ValueError("Set ENABLE_LIVE_TRADING=true explicitly before starting a LIVE bridge")
     token = Path(cfg.env.mt5_bridge_token_file).read_text().strip()
-    journal = ROOT / ".docker" / "bridge_requests.db"
+    journal = Path(os.environ.get('NOA_HOST_STATE_DIR', str(ROOT / '.docker'))) / 'bridge_requests.db'
     journal.parent.mkdir(exist_ok=True)
     client = MT5Client(cfg.env, cfg.get("trading.mt5_time_zone", "UTC"))
     # The native bot uses the same lock: local and Docker LIVE cannot run together.
@@ -239,7 +240,8 @@ def main():
         if portal_request is not None:
             from core.account_login import verify_account
             client.initialize()
-            verify_account(client.account_info(), client.terminal_info(), portal_request)
+            verify_account(client.account_info(), client.terminal_info(), portal_request,
+                require_trading=args.allow_live)
         service = BridgeService(client, token, journal, args.allow_live, cfg.get("trading.magic", 260912))
         try:
             with BridgeServer((args.bind, args.port), handler_for(service)) as server:

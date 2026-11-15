@@ -53,6 +53,15 @@ class DesktopRuntime:
         self.started_at = None
 
     def compose(self, *args, account=None):
+        if os.environ.get('NOA_DOCKER_CONTROL_SOCKET'):
+            from core.server_control import compose_request
+            try:
+                result = compose_request(os.environ['NOA_DOCKER_CONTROL_SOCKET'], args)
+            except (OSError, ValueError):
+                raise AccountError('سرویس کنترل موتور در دسترس نیست.') from None
+            if result['returncode']:
+                raise AccountError('اجرای سرویس موتور ناموفق بود؛ وضعیت سرور را بررسی کنید.')
+            return result.get('stdout', '')
         env = dict(os.environ)
         env.pop("MT5_PASSWORD", None)
         if account:
@@ -178,8 +187,9 @@ class DesktopRuntime:
                 client = self.bridge_client()
                 try:
                     client.initialize()
-                    verify_account(client.account_info(), client.terminal_info(), request)
-                    if not client.bridge_live:
+                    verify_account(client.account_info(), client.terminal_info(), request,
+                        require_trading=self.trading_enabled())
+                    if self.trading_enabled() and not client.bridge_live:
                         raise AccountError("مجوز معامله در پل اتصال فعال نشده است.")
                     return
                 finally:
@@ -189,6 +199,9 @@ class DesktopRuntime:
 
     def bridge_command(self):
         return [sys.executable, "-m", "core.mt5_bridge", "--allow-live", "--session-stdin"]
+
+    def trading_enabled(self):
+        return True  # Desktop login UI explicitly starts the selected account's engine.
 
     def resolve_terminal_path(self, request):
         return terminal_path(request.terminal_path or self.cfg.env.mt5_path or "")
@@ -239,7 +252,8 @@ class DesktopRuntime:
         if not self.account:
             return None
         identity = hashlib.sha256(f"{self.account['server']}:{self.account['login']}".encode()).hexdigest()[:16]
-        return f"LIVE:{identity}:{int(self.cfg.get('trading.magic', 260912))}"
+        mode = 'LIVE' if self.trading_enabled() else 'PAPER'
+        return f"{mode}:{identity}:{int(self.cfg.get('trading.magic', 260912))}"
 
     def status(self):
         connected = False
@@ -416,7 +430,8 @@ def main():
         except PortalUnavailable:
             raise SystemExit(1) from None
     cfg.validate_runtime()
-    with RuntimeLock(ROOT / ".docker" / "portal.lock"):
+    state = Path(os.environ.get('NOA_HOST_STATE_DIR', str(ROOT / '.docker')))
+    with RuntimeLock(state / "portal.lock"):
         runtime = DesktopRuntime(cfg)
         if os.environ.get("NOA_MT5_RUNTIME") == "wine":
             from core.wine_runtime import WineRuntime

@@ -22,5 +22,5 @@ source=Path('/etc/apt/sources.list.d/winehq-resolute.sources')
 source.write_text(source.read_text().replace('/etc/apt/keyrings/winehq-archive.key',str(key)))
 PY
 apt-get update
-apt-get install -y --no-install-recommends winehq-devel
-wine --version
+apt-get install -y --no-install-recommends winehq-devel libxcursor1 libxcomposite1 libxfixes3 libxi6 libxinerama1 libxrandr2 libxrender1 libxxf86vm1 libgl1-mesa-dri libdbus-1-3
+/opt/wine-devel/bin/wine --version

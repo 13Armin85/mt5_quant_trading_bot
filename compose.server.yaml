@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 180s
     network_mode: host
-    command: ["run", "--mode", "live"]
+    command: ["run", "--mode", "${NOA_RUN_MODE:-paper}"]
     environment:
       MT5_BRIDGE_URL: http://127.0.0.1:18765
       MT5_BRIDGE_TOKEN_FILE: /run/secrets/mt5_bridge_token
@@ -85,5 +85,5 @@ services:
       start_period: 30s
       retries: 3
 secrets:
-  mt5_bridge_token: {file: ./.docker/bridge.token}
-  account_portal_token: {file: ./.docker/portal.token}
+  mt5_bridge_token: {file: /etc/noatech/bridge.token}
+  account_portal_token: {file: /etc/noatech/portal.token}

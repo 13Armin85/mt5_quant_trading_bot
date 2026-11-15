@@ -1,4 +1,4 @@
-MetaTrader5==5.0.6180; sys_platform == "win32"
+MetaTrader5==5.0.6231; sys_platform == "win32"
 pandas==3.0.5
 numpy==2.3.2
 scipy==1.16.1
@@ -9,11 +9,12 @@ ta==0.11.0
 httpx==0.28.1
 pydantic==2.11.7
 pydantic-settings==2.10.1
-python-dotenv==1.1.1
+python-dotenv==1.2.2
 PyYAML==6.0.2
 SQLAlchemy==2.0.43
 loguru==0.7.3
-pytest==8.4.2
+pytest==9.0.3
 joblib==1.5.2
-streamlit==1.63.0
+streamlit==1.67.0
 plotly==6.3.0
+Pillow==13.0.0

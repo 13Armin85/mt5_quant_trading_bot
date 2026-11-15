@@ -52,7 +52,11 @@ class WineRuntime(DesktopRuntime):
     def authenticate_account(self, request, path):
         return self.native_probe("authenticate", {"login":str(request.login),"password":request.password,
             "server":request.server,"account_type":request.account_type,"terminal_path":path,
-            "confirm_real":request.account_type=="real"})
+            "confirm_real":request.account_type=="real", "_trading_authorized":self.trading_enabled()})
+
+    def trading_enabled(self):
+        return Path(os.environ.get('NOA_DEMO_TRADING_FLAG','/etc/noatech/demo-trading.enabled')).is_file()
 
     def bridge_command(self):
-        return [*self.wine_command(), "-m", "core.mt5_bridge", "--allow-live", "--session-stdin"]
+        command = [*self.wine_command(), "-m", "core.mt5_bridge", "--session-stdin"]
+        return [*command,'--allow-live'] if self.trading_enabled() else command

@@ -76,3 +76,15 @@ def test_wine_sdk_receives_password_only_on_stdin(monkeypatch,tmp_path):
     assert 'test-only-password' not in repr(command)
     assert json.loads(options['input'])['password']=='test-only-password'
     assert response['account_type']=='demo'
+
+
+def test_server_bridge_cannot_trade_without_root_provisioned_flag(monkeypatch,tmp_path):
+    flag=tmp_path/'demo-trading.enabled'
+    monkeypatch.setenv('NOA_DEMO_TRADING_FLAG',str(flag))
+    monkeypatch.setenv('NOA_WINE_PYTHON','/windows/python.exe')
+    runtime=WineRuntime(root=tmp_path)
+    assert not runtime.trading_enabled()
+    assert '--allow-live' not in runtime.bridge_command()
+    flag.touch()
+    assert runtime.trading_enabled()
+    assert '--allow-live' in runtime.bridge_command()

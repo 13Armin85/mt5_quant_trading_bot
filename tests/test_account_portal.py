@@ -63,6 +63,16 @@ def test_real_login_requires_explicit_intent_and_verified_actual_account_type():
     assert result["account_type"] == "real" and "password" not in result
 
 
+def test_monitoring_login_accepts_disabled_trading_but_still_checks_identity():
+    request=AccountLogin.parse(payload())
+    a=account(trade_allowed=False,trade_expert=False)
+    t=terminal(trade_allowed=False,tradeapi_disabled=True)
+    result=verify_account(a,t,request,require_trading=False)
+    assert result['login']==12345 and not result['trade_allowed']
+    with pytest.raises(AccountError):
+        verify_account(account(login=999),t,request,require_trading=False)
+
+
 @pytest.mark.parametrize("changes,target", [
     ({"login": 999}, "account"), ({"server": SERVERS["real"]}, "account"),
     ({"trade_allowed": False}, "account"), ({"trade_expert": False}, "account"),

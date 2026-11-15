@@ -5,7 +5,7 @@ import sys
 
 from config import load_config
 from core.account_login import AccountError, AccountLogin, verify_account
-from core.mt5_client import MT5Client, MT5Error
+from core.mt5_client import MT5Client, MT5Error, mt5
 
 
 def main():
@@ -14,7 +14,7 @@ def main():
     action=parser.parse_args().action
     payload=json.loads(sys.stdin.readline(16385))
     cfg=load_config()
-    values={"mt5_login":None,"mt5_server":None,"mt5_password":None,"mt5_path":payload.get("terminal_path")}
+    values={"mt5_login":None,"mt5_server":None,"mt5_password":None,"mt5_path":payload.get("terminal_path") or cfg.env.mt5_path}
     request=None
     if action=="authenticate":
         request=AccountLogin.parse(payload)
@@ -22,8 +22,9 @@ def main():
     client=MT5Client(cfg.env.model_copy(update=values),cfg.get("trading.mt5_time_zone","UTC"))
     try:
         if request:
-            client.authenticate(timeout=15000)
-            result=verify_account(client.account_info(),client.terminal_info(),request)
+            client.authenticate(timeout=60000)
+            result=verify_account(client.account_info(),client.terminal_info(),request,
+                require_trading=payload.get('_trading_authorized') is True)
         else:
             try:
                 client.initialize(timeout=15000)
@@ -39,7 +40,8 @@ def main():
     except AccountError as error:
         print(json.dumps({"ok":False,"error":str(error)}),flush=True)
     except MT5Error:
-        print(json.dumps({"ok":False,"error":"ورود متاتریدر ناموفق بود؛ شماره حساب، رمز و سرور را بررسی کنید."}),flush=True)
+        print(json.dumps({"ok":False,"sdk_code":int(mt5.last_error()[0]),
+            "error":"ورود متاتریدر ناموفق بود؛ شماره حساب، رمز و سرور را بررسی کنید."}),flush=True)
     finally:
         client.shutdown()
 

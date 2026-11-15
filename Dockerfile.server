@@ -1,0 +1,10 @@
+# Refresh application sources using the dependency image transferred to the host.
+# Build with: docker tag noatech:server noatech:base
+# docker build --network=none --pull=false -f Dockerfile.server -t noatech:server .
+FROM noatech:base
+USER root
+COPY requirements-security.txt /tmp/requirements-security.txt
+COPY .wheels /tmp/noatech-wheels
+RUN pip install --no-cache-dir --no-index --find-links=/tmp/noatech-wheels --requirement /tmp/requirements-security.txt
+COPY --chown=trader:trader . /app
+USER trader

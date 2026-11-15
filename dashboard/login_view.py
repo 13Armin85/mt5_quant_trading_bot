@@ -71,7 +71,7 @@ def authenticate(cfg):
                     st.warning("پس از ورود، ربات می‌تواند با موجودی واقعی این حساب معامله کند.")
                     confirmed = st.checkbox("اجازهٔ شروع معاملات خودکار روی حساب واقعی را می‌دهم.", key="login_confirm_real")
                 submitted = st.form_submit_button("اتصال و ورود به نواتک", type="primary", disabled=not ready, use_container_width=True)
-            st.markdown(f'<div class="nv-secret-note">{icon("shield",15)} رمز شما فقط برای همین نشست استفاده می‌شود.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="nv-secret-note">{icon("shield",15)} رمز شما برای اتصال امن به حساب استفاده می‌شود.</div>', unsafe_allow_html=True)
             st.caption("با ورود، ربات روی حساب انتخاب‌شده فعال می‌شود. از رمز معاملاتی MT5 استفاده کنید، نه رمز پروفایل وب بروکر.")
             if submitted:
                 try:

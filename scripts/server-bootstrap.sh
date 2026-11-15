@@ -4,12 +4,11 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 echo '[1/5] Installing Docker, Wine, a virtual display and the web proxy'
 apt-get update
-apt-get install -y --no-install-recommends docker.io docker-compose-v2 nginx wine wine64 xvfb xauth xdotool fluxbox scrot python3-venv unzip curl ca-certificates fonts-dejavu-core
+apt-get install -y --no-install-recommends docker.io docker-compose-v2 nginx wine wine64 xvfb xauth xdotool fluxbox scrot python3-venv unzip curl ca-certificates fonts-dejavu-core libxcursor1 libxcomposite1 libxfixes3 libxi6 libxinerama1 libxrandr2 libxrender1 libxxf86vm1 libgl1-mesa-dri libdbus-1-3 dbus-x11 x11-utils
 echo '[2/5] Creating the application service account and directories'
 if ! id noatech >/dev/null 2>&1; then
     useradd --system --user-group --create-home --home-dir /var/lib/noatech --shell /usr/sbin/nologin noatech
 fi
-usermod -aG docker noatech
 install -d -o noatech -g noatech -m 0750 /opt/noatech/app /var/lib/noatech /var/lib/noatech/wine
 install -d -o root -g noatech -m 0750 /etc/noatech
 install -d -m 0755 /var/www/noatech-acme
