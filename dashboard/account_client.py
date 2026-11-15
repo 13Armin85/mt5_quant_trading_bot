@@ -21,7 +21,7 @@ class AccountPortalClient:
                 headers["X-Account-Session"] = session
             if maintenance:
                 headers['X-Maintenance-Token'] = maintenance
-            with httpx.Client(trust_env=False, timeout=240 if path == "/login" else 210) as client:
+            with httpx.Client(trust_env=False, timeout=550 if path == "/login" else 210) as client:
                 if payload is None:
                     response = client.get(self.url + path, headers=headers)
                 else:

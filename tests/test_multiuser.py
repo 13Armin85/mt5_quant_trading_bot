@@ -96,6 +96,7 @@ def test_relogin_verifies_password_without_stopping_or_starting_engine(tmp_path,
     runtime=DesktopRuntime(root=tmp_path)
     runtime.account={'login':111,'server':'LiteFinance-MT5-Demo','account_type':'demo'}
     runtime.started_at=123
+    runtime.remember_password('correct-111')
     monkeypatch.setattr(runtime,'resolve_terminal_path',lambda request:'terminal64.exe')
     monkeypatch.setattr(runtime,'bridge_running',lambda:True)
     verified=[]
@@ -104,7 +105,9 @@ def test_relogin_verifies_password_without_stopping_or_starting_engine(tmp_path,
     monkeypatch.setattr(runtime,'compose',forbidden)
     monkeypatch.setattr(runtime,'snapshot',forbidden)
     result=runtime.login(AccountLogin.parse(credentials()))
-    assert verified==['correct-111'] and result['started_at']==123
+    assert verified==[] and result['started_at']==123
+    with pytest.raises(AccountError):runtime.login(AccountLogin.parse(dict(credentials(),password='wrong')))
+    assert not verified
     with pytest.raises(AccountError):runtime.login(AccountLogin.parse(credentials(222)))
 
 

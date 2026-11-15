@@ -53,7 +53,7 @@ def authenticate(cfg):
     st.markdown(f'<div class="nv-topbar">{brand()}<div class="nv-topbar-meta">{state}<span>متصل به دنیای MetaTrader 5</span></div></div>', unsafe_allow_html=True)
     introduction, form_column = st.columns([1.08, 1], gap="large")
     with introduction:
-        st.markdown('<div class="nv-login-intro"><span class="nv-eyebrow">NOATECH / TRADING WORKSPACE</span><h1>دید روشن‌تر.<br><em>تصمیم حساب‌شده‌تر.</em></h1><p>حساب معاملاتی، تحلیل بازار و وضعیت ربات؛<br>همه در یک میزکار آرام و منظم.</p>' + WORKSPACE_ART + '<div class="nv-login-steps"><span><b>01</b>انتخاب حساب</span><span><b>02</b>اتصال به متاتریدر</span><span><b>03</b>شروع پایش بازار</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="nv-login-intro"><span class="nv-eyebrow">NOA</span><h1>معاملات شما،<br>روشن و منظم.</h1><p>حساب، تحلیل بازار و وضعیت ربات را<br>در یک فضای ساده دنبال کنید.</p><div class="nv-login-features"><span>{icon("wallet",18)}نمای یکپارچهٔ حساب</span><span>{icon("activity",18)}پایش خودکار بازار</span><span>{icon("shield",18)}کنترل روشنِ ریسک</span></div></div>', unsafe_allow_html=True)
     with form_column:
         with st.container(key="noatech_login_card"):
             st.markdown(f'<div class="nv-login-heading"><span>{icon("link",16)} یک اتصال، یک میزکار</span><h2>به نواتک خوش آمدید</h2><p>برای ورود، اطلاعات حساب معاملاتی MT5 خود را وارد کنید.</p></div>', unsafe_allow_html=True)
@@ -101,7 +101,7 @@ def account_header(cfg, status):
     kind = "حساب دمو" if account.get("account_type") == "demo" else "حساب واقعی"
     connected = status.get("connected", False)
     connection = badge("متصل به متاتریدر" if connected else "اتصال قطع است", "good" if connected else "bad")
-    st.markdown(f'<div class="nv-topbar">{brand()}<div class="nv-topbar-meta" role="status" aria-live="polite">{connection}{badge(kind,"accent")}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="nv-topbar"><span class="nv-workspace-label">میزکار معاملات</span><div class="nv-topbar-meta" role="status" aria-live="polite">{connection}{badge(kind,"accent")}</div></div>', unsafe_allow_html=True)
     with st.sidebar:
         st.markdown(brand(""), unsafe_allow_html=True)
         st.markdown('<div class="nv-side-caption">حساب معاملاتی شما</div>', unsafe_allow_html=True)

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import plotly.graph_objects as go
 import streamlit as st
 
-from dashboard.theme import badge, e, empty_state, fa, icon, section
+from dashboard.theme import badge, e, empty_state, fa, icon, section, strategy_empty_state, theme_palette
 
 
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -185,18 +185,19 @@ def analysis_panel(cfg, analyses):
     with content:
         section("مقایسهٔ استراتژی‌ها", "امتیازها میزان تطابق قواعد را نشان می‌دهند، نه احتمال سود.")
         if assessments:
+            colors = theme_palette()
             data = [{"استراتژی": translated(a.get("strategy"),STRATEGIES), "امتیاز": number(a.get("score")) or 0,
                 "جهت": translated(a.get("direction")), "شرایط ورود": "تأییدشده" if a.get("eligible") else "تأیید نشده"} for a in assessments]
             fig = go.Figure(go.Bar(x=[a["امتیاز"] for a in data], y=[a["استراتژی"] for a in data], orientation="h",
-                marker_color=["#816BFF" if a.get("eligible") else "#565B6E" for a in assessments],
+                marker_color=[colors['accent'] if a.get("eligible") else colors['disabled'] for a in assessments],
                 hovertemplate="%{y}<br>امتیاز: %{x:.2f}<extra></extra>"))
             fig.update_layout(height=max(245, len(data)*26+40), margin=dict(l=10,r=20,t=10,b=20),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",color="#A0A5B6",size=11),
-                xaxis=dict(range=[0,1],gridcolor="#242735",zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",color=colors['secondary'],size=11),
+                xaxis=dict(range=[0,1],gridcolor=colors['line'],zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False}, key="noatech_strategy_chart")
             st.dataframe(data, width="stretch", hide_index=True)
         else:
-            empty_state("ارزیابی استراتژی هنوز آماده نیست", "در صورت فراهم بودن دادهٔ کافی، نتیجهٔ قواعد مختلف اینجا نمایش داده می‌شود.")
+            strategy_empty_state()
     with technical:
         section("قیمت و برنامهٔ معامله", "اطلاعات ثبت‌شده در آخرین ارزیابی نماد.")
         chart = analysis.get("live_chart") or {}
@@ -296,6 +297,8 @@ def render_workspace(cfg, status, view):
     heartbeat = view.get("heartbeat") or {}
     account = status.get("account") or {}
     age = age_seconds(heartbeat,now)
+    if status.get('trading_requested') is False:
+        st.info('ترید این حساب با درخواست شما متوقف است. خروج و ورود دوباره آن را فعال نمی‌کند؛ برای ادامه از «شروع ترید» استفاده کنید. داده‌های قبلی ممکن است قدیمی باشند.')
     st.markdown(f'<div class="nv-page-heading"><div><span class="nv-eyebrow">NOATECH / WORKSPACE</span><h1>نمای کلی میزکار</h1><p>تصویری روشن از حساب، بازار و تصمیم‌های ربات.</p></div><div class="nv-clock">{fa(now.astimezone(TEHRAN).strftime("%H:%M"))}<span>به وقت تهران · به‌روزرسانی خودکار</span></div></div>',unsafe_allow_html=True)
     if heartbeat.get("phase")=="starting":
         st.info("حساب متصل است؛ نواتک داده‌های بازار را برای اولین تحلیل آماده می‌کند.")

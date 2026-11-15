@@ -8,6 +8,29 @@ import streamlit as st
 
 ASSETS = Path(__file__).parent / "assets"
 
+PALETTES = {
+    'dark': {
+        'bg':'#101113', 'panel':'#191B1F', 'panel-soft':'#141619', 'line':'#2B2E34',
+        'text':'#F0F1F3', 'muted':'#979CA8', 'secondary':'#AEB3BE', 'disabled':'#626975',
+        'accent':'#7964E8', 'link':'#B6A8FF', 'accent-soft':'#7964E819',
+        'mint':'#62CDA7', 'danger':'#F58A95', 'warning':'#EBC080',
+        'good-soft':'#62CDA710', 'bad-soft':'#F58A9510', 'warn-soft':'#EBC08010',
+    },
+    'light': {
+        'bg':'#F6F7F9', 'panel':'#FFFFFF', 'panel-soft':'#F0F2F5', 'line':'#E2E5EA',
+        'text':'#20242C', 'muted':'#6B7280', 'secondary':'#596170', 'disabled':'#858C99',
+        'accent':'#6750CE', 'link':'#5C46BF', 'accent-soft':'#6750CE0D',
+        'mint':'#087653', 'danger':'#BD3448', 'warning':'#92600B',
+        'good-soft':'#0876530A', 'bad-soft':'#BD34480A', 'warn-soft':'#92600B0A',
+    },
+}
+
+
+def theme_palette():
+    # Native appearance preference is browser-scoped; no shared server option
+    # or account/session setting is changed when someone switches appearance.
+    return PALETTES['light' if st.context.theme.type == 'light' else 'dark']
+
 
 def stylesheet():
     return (ASSETS / "noatech.css").read_text(encoding="utf-8-sig")
@@ -19,7 +42,8 @@ def mark():
 
 
 def apply_theme():
-    st.markdown("<style>" + stylesheet() + "</style>", unsafe_allow_html=True)
+    variables=';'.join(f'--nv-{name}:{value}' for name,value in theme_palette().items())
+    st.markdown('<style>'+stylesheet()+':root{'+variables+'}</style>', unsafe_allow_html=True)
 
 
 def e(value):
@@ -61,3 +85,24 @@ def section(title, subtitle="", eyebrow=""):
 
 def empty_state(title, description, symbol="activity"):
     st.markdown(f'<div class="nv-empty"><div>{icon(symbol,26)}</div><h4>{e(title)}</h4><p>{e(description)}</p></div>', unsafe_allow_html=True)
+
+
+def strategy_empty_state():
+    """Explain missing assessments without suggesting calculated scores exist."""
+    st.markdown(
+        '<section class="nv-strategy-empty" aria-label="وضعیت ارزیابی استراتژی‌ها">'
+        f'<div class="nv-strategy-empty-head"><span class="nv-strategy-symbol">{icon("layers",22)}</span>'
+        f'{badge("در انتظار ارزیابی", "muted")}</div>'
+        '<div class="nv-strategy-empty-copy"><span class="nv-eyebrow">ارزیابی چنداستراتژی</span>'
+        '<h4>هنوز نتیجه‌ای برای مقایسه نداریم</h4>'
+        '<p>با آماده‌شدن داده‌های موردنیاز، نتیجهٔ قواعد هر استراتژی را در کنار هم می‌بینید؛ '
+        'از امتیاز تطابق تا جهت پیشنهادی و شرایط ورود.</p></div>'
+        '<div class="nv-assessment-preview" aria-hidden="true">'
+        '<div class="nv-assessment-preview-head"><span>استراتژی</span><span>امتیاز</span><span>جهت</span></div>'
+        '<div class="nv-assessment-preview-row"><span class="nv-placeholder-line"></span><span>—</span><span>—</span></div>'
+        '<div class="nv-assessment-preview-row"><span class="nv-placeholder-line short"></span><span>—</span><span>—</span></div>'
+        '<div class="nv-assessment-preview-row"><span class="nv-placeholder-line medium"></span><span>—</span><span>—</span></div>'
+        '</div>'
+        f'<div class="nv-strategy-empty-note">{icon("clock",16)}'
+        '<span>نیازی به بارگذاری دوباره نیست؛ نتیجه پس از ثبت ارزیابی، خودکار نمایش داده می‌شود.</span></div>'
+        '</section>', unsafe_allow_html=True)

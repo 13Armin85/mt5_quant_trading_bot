@@ -52,6 +52,18 @@ class DesktopRuntime:
         self.account = None
         self.started_at = None
         self.operation_lock = RLock()
+        self.password_salt = None
+        self.password_digest = None
+
+    def remember_password(self, password):
+        self.password_salt = secrets.token_bytes(32)
+        self.password_digest = hashlib.scrypt(password.encode(),salt=self.password_salt,n=16384,r=8,p=1,dklen=32)
+
+    def password_matches(self, password):
+        if self.password_salt is None or self.password_digest is None:
+            return False
+        digest=hashlib.scrypt(password.encode(),salt=self.password_salt,n=16384,r=8,p=1,dklen=32)
+        return hmac.compare_digest(digest,self.password_digest)
 
     def stopped_flag(self):
         return Path(os.environ.get('NOA_TRADING_STOPPED_FLAG', str(self.root / '.docker/control/trading_stopped')))
@@ -231,12 +243,14 @@ class DesktopRuntime:
     def _login(self, request):
         path = self.resolve_terminal_path(request)
         if self.account:
-            if (self.account['login'], self.account['server']) != (request.login, request.server):
+            if (self.account['login'], self.account['server'], self.account['account_type']) != (request.login, request.server, request.account_type):
                 raise AccountError('هر حساب باید به محیط مستقل خودش وارد شود؛ تعویض حساب روی این متاتریدر مجاز نیست.')
             if self.bridge_running():
-                # Re-authenticate the broker password without stopping the engine,
-                # rotating other browser sessions, or resetting its history window.
-                self.authenticate_account(request, path)
+                # The password was verified by the SDK when this isolated
+                # runtime connected. A bad web login must never call mt5.login
+                # on a running terminal: the SDK could disconnect its account.
+                if not self.password_matches(request.password):
+                    raise AccountError('اطلاعات ورود به این حساب معتبر نیست.')
                 return dict(self.account, started_at=self.started_at, scope=self.scope())
         if not self.account and not self.bridge_running():
             self.cfg.env.mt5_path = path
@@ -254,6 +268,7 @@ class DesktopRuntime:
         self.stop_bridge()
         account = self.authenticate_account(request, path)
         self.account = account
+        self.remember_password(request.password)
         self.cfg.env.mt5_path = path
         self.started_at = time.time()
         try:

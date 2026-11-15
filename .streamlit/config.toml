@@ -1,21 +1,28 @@
 [theme]
-base = "dark"
-primaryColor = "#816BFF"
-backgroundColor = "#090B12"
-secondaryBackgroundColor = "#161824"
-textColor = "#F5F5F8"
 font = "Vazirmatn, sans-serif"
 headingFont = "Vazirmatn, sans-serif"
 baseFontSize = 14
 baseFontWeight = 400
-metricValueFontSize = "1.9rem"
-metricValueFontWeight = 800
+metricValueFontSize = "1.8rem"
+metricValueFontWeight = 700
 
 [[theme.fontFaces]]
 family = "Vazirmatn"
 url = "app/static/fonts/Vazirmatn.woff2"
 weight = "100 900"
 style = "normal"
+
+[theme.light]
+primaryColor = "#6750CE"
+backgroundColor = "#F6F7F9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#20242C"
+
+[theme.dark]
+primaryColor = "#7964E8"
+backgroundColor = "#101113"
+secondaryBackgroundColor = "#191B1F"
+textColor = "#F0F1F3"
 
 [server]
 enableXsrfProtection = true

@@ -25,6 +25,7 @@ from core.tenancy import MAX_REPLY, checked_key, tenant_key
 
 APP=Path('/opt/noatech/app')
 CODE=Path('/opt/noatech/tenant-app')
+TEMPLATE=Path('/opt/noatech/tenant-template')
 REGISTRY=Path('/etc/noatech/tenants')
 HOMES=Path('/var/lib/noatech-tenants')
 POLICIES=Path('/etc/noatech-worker-policies')
@@ -82,9 +83,15 @@ class Controller:
             headers['X-Account-Session']=session
         address=f"http://127.0.0.1:{record['portal_port']}/{operation}"
         with httpx.Client(trust_env=False,timeout=230 if operation=='login' else 210) as client:
-            response=client.get(address,headers=headers) if operation in {'status','view'} else client.post(
-                address,headers=headers,json=payload or {})
-        result=response.json()
+            method='GET' if operation in {'status','view'} else 'POST'
+            options={} if method=='GET' else {'json':payload or {}}
+            with client.stream(method,address,headers=headers,**options) as response:
+                body=bytearray()
+                for chunk in response.iter_bytes(65536):
+                    body.extend(chunk)
+                    if len(body)>MAX_REPLY:
+                        raise AccountError('حجم پاسخ محیط حساب بیش از حد مجاز است.')
+        result=json.loads(body)
         if not result.get('ok'):
             raise AccountError(result.get('error','اتصال حساب کامل نشد.'))
         return result
@@ -140,17 +147,19 @@ class Controller:
             for folder in ['work','work/.docker','work/.docker/data','work/.docker/control','work/logs','work/reports','state','startup','wine']:
                 path=home/folder;path.mkdir(parents=True,exist_ok=True)
                 os.chown(path,user.pw_uid,user.pw_gid);os.chmod(path,0o2770 if folder.startswith('work/') else 0o700)
+            policy=POLICIES/key;policy.mkdir(mode=0o750)
+            os.chown(policy,0,user.pw_gid)
             tokens={}
             for name in ['bridge','portal']:
-                path=home/(name+'.token');path.write_text(secrets.token_urlsafe(48))
-                os.chown(path,user.pw_uid,user.pw_gid);os.chmod(path,0o600);tokens[name]=str(path)
+                path=policy/(name+'.token');path.write_text(secrets.token_urlsafe(48))
+                os.chown(path,0,user.pw_gid);os.chmod(path,0o640);tokens[name]=str(path)
             python=home/'wine/drive_c/Python312'
-            shutil.copytree('/var/lib/noatech/wine/drive_c/Python312',python,symlinks=False)
+            shutil.copytree(TEMPLATE/'Python312',python,symlinks=False)
             (python/'python312._pth').write_text('python312.zip\n.\nLib\\site-packages\nZ:\\opt\\noatech\\tenant-app\nimport site\n')
             terminal=home/'wine/drive_c/Program Files/MetaTrader 5'
             (terminal/'Config').mkdir(parents=True)
             for name in ['terminal64.exe','Config/servers.dat']:
-                shutil.copyfile(Path('/var/lib/noatech/wine/drive_c/Program Files/MetaTrader 5')/name,terminal/name)
+                shutil.copyfile(TEMPLATE/'MetaTrader5'/name,terminal/name)
             # Only public executables, Python packages and the server catalogue
             # are copied. No account caches, histories, registry or owner files.
             for directory,dirs,files in os.walk(home/'wine'):
@@ -159,8 +168,6 @@ class Controller:
             authority=home/'.Xauthority';authority.touch(mode=0o600)
             subprocess.run(['xauth','-f',str(authority),'source','-'],input=f'add :{100+slot} . {secrets.token_hex(16)}\n'.encode(),capture_output=True,check=True)
             os.chown(authority,user.pw_uid,user.pw_gid)
-            policy=POLICIES/key;policy.mkdir(mode=0o750)
-            os.chown(policy,0,user.pw_gid)
             record={'key':key,'slot':slot,'login':request.login,'server':request.server,'account_type':request.account_type,
                 'uid':user.pw_uid,'gid':user.pw_gid,'username':username,'home':str(home),'work':str(work),
                 'portal_token':tokens['portal'],'bridge_token':tokens['bridge'],'credential':str(private/'mt5.cred'),
@@ -208,7 +215,7 @@ class Controller:
                 'OPENBLAS_NUM_THREADS':'1','OMP_NUM_THREADS':'1'},
             'volumes':[f'{work}/.docker/data:/app/data',f'{work}/.docker/control:/app/control',
                 f'{work}/logs:/app/logs',f'{work}/reports:/app/reports',f'{CODE}/config:/app/config:ro'],
-            'secrets':['bridge_token'],'read_only':True,'tmpfs':['/tmp'],'cap_drop':['ALL'],
+            'secrets':[{'source':'bridge_token','target':'bridge.token'}],'read_only':True,'tmpfs':['/tmp'],'cap_drop':['ALL'],
             'security_opt':['no-new-privileges:true'],'pids_limit':192,'mem_limit':'512m','cpus':.4,
             'ulimits':{'core':{'soft':0,'hard':0}},
             'healthcheck':{'test':['CMD','python','-m','docker_runtime.healthcheck'],'interval':'30s',
@@ -225,7 +232,7 @@ class Controller:
             'XAUTHORITY':home+'/.Xauthority','PYTHONUTF8':'1','PYTHONDONTWRITEBYTECODE':'1',
             'NOA_TENANT_ID':key,'NOA_TENANT_LOGIN':str(record['login']),
             'NOA_TENANT_SERVER':record['server'],'NOA_TENANT_TYPE':record['account_type'],
-            'NOA_RUNTIME_ROOT':work,'NOA_HOST_STATE_DIR':home+'/state','NOA_MT5_STARTUP_DIR':home+'/startup',
+            'NOA_RUNTIME_ROOT':work,'NOA_HOST_STATE_DIR':home+'/state','NOA_MT5_STARTUP_DIR':'/run/noa-account-'+key,
             'NOA_AUTO_LOGIN_FLAG':work+'/.docker/control/auto_login','NOA_TRADING_STOPPED_FLAG':work+'/.docker/control/trading_stopped',
             'NOA_DEMO_TRADING_FLAG':str(POLICIES/key/'live.enabled'),'MT5_PORTABLE':'true',
             'MT5_BRIDGE_TOKEN_FILE':record['bridge_token'],'ACCOUNT_PORTAL_TOKEN_FILE':record['portal_token'],
@@ -235,13 +242,15 @@ class Controller:
         environment='\n'.join('Environment="'+name+'='+value+'"' for name,value in env.items())
         unit=f'''[Unit]
 Description=NOA isolated account {key}
-Requires=noatech-tenants.service
+Wants=noatech-tenants.service
 After=noatech-tenants.service network-online.target
 [Service]
 Type=exec
 User={record['username']}
 Group={record['username']}
 WorkingDirectory={CODE}
+RuntimeDirectory=noa-account-{key}
+RuntimeDirectoryMode=0700
 {environment}
 LoadCredentialEncrypted=mt5:{record['credential']}
 ExecStart=/opt/noatech/venv/bin/python -m scripts.tenant_worker
@@ -253,12 +262,13 @@ UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths={home} /tmp
+ReadWritePaths={home} /run/noa-account-{key}
 MemoryHigh=640M
 MemoryMax=896M
 MemorySwapMax=512M
@@ -301,16 +311,25 @@ WantedBy=multi-user.target
         if parsed.terminal_path or parsed.server!=SERVERS[parsed.account_type] or tenant_key(parsed.login,parsed.server)!=key:
             raise AccountError('هویت حساب یا سرور معتبر نیست.')
         with self.tenant_lock(key):
+            pending_record=None
             if (REGISTRY/key/'record.json').exists():
                 record=self.record(key)
-                result=self.forward(record,'login',payload=request['payload'])
-                self.encrypt(record,request['payload'])
-                return result
+                if record.get('verified'):
+                    result=self.forward(record,'login',payload=request['payload'])
+                    self.encrypt(record,request['payload'])
+                    return result
+                # Recover an interrupted first enrolment. No trading can have
+                # started: compose() rejects every start until verified=True.
+                pending_record=record
             if not self.admission.acquire(blocking=False):
                 raise AccountError('یک محیط جدید در حال آماده‌سازی است؛ کمی بعد دوباره تلاش کنید.')
             record=None
             try:
-                record=self.provision(parsed,key)
+                record=pending_record or self.provision(parsed,key)
+                if pending_record:
+                    run(['systemctl','stop',record['unit']],timeout=240)
+                    self.write_compose(record)
+                    self.write_unit(record)
                 self.encrypt(record,request['payload'])
                 run(['systemctl','start',record['unit']])
                 self.wait_worker(record)
@@ -318,6 +337,9 @@ WantedBy=multi-user.target
                 account=result['account']
                 if (account['login'],account['server'],account['account_type'])!=(parsed.login,parsed.server,parsed.account_type):
                     raise AccountError('حساب تأییدشده تطابق ندارد.')
+                if parsed.account_type=='demo' and (not account.get('account_trade_allowed') or
+                    not account.get('expert_allowed') or account.get('python_api_disabled')):
+                    raise AccountError('برای ترید دمو از رمز معاملاتی و مجوز فعال معامله استفاده کنید؛ رمز سرمایه‌گذار کافی نیست.')
                 run(['systemctl','stop',record['unit']],timeout=240)
                 record['verified']=True
                 atomic_json(REGISTRY/key/'record.json',record)
@@ -387,7 +409,7 @@ def main():
     os.umask(0o007)
     with ControlServer(address,Handler) as server:
         server.controller=controller
-        os.chmod(address,0o666)  # Kernel peer identity is checked for every operation.
+        os.chmod(address,0o660)  # Dedicated group plus kernel peer identity, checked per operation.
         server.serve_forever()
 
 

@@ -30,7 +30,7 @@ def control(request):
     address = os.environ.get('NOA_TENANT_CONTROL_SOCKET', '/run/noatech-tenants/control.sock')
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(290)
+            connection.settimeout(540)
             connection.connect(address)
             connection.sendall(json.dumps(request, ensure_ascii=True).encode()+b'\n')
             with connection.makefile('rb') as handle:
