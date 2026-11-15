@@ -19,7 +19,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
-from threading import Thread
+from threading import Thread, RLock
 import time
 
 import httpx
@@ -51,6 +51,13 @@ class DesktopRuntime:
         self.bridge_process = None
         self.account = None
         self.started_at = None
+        self.operation_lock = RLock()
+
+    def stopped_flag(self):
+        return Path(os.environ.get('NOA_TRADING_STOPPED_FLAG', str(self.root / '.docker/control/trading_stopped')))
+
+    def bridge_port(self):
+        return int(os.environ.get('NOA_MT5_BRIDGE_PORT', '18765'))
 
     def compose(self, *args, account=None):
         if os.environ.get('NOA_DOCKER_CONTROL_SOCKET'):
@@ -79,16 +86,15 @@ class DesktopRuntime:
         return result.stdout
 
     def bridge_client(self):
-        env = self.cfg.env.model_copy(update={"mt5_bridge_url": "http://127.0.0.1:18765",
+        env = self.cfg.env.model_copy(update={"mt5_bridge_url": f"http://127.0.0.1:{self.bridge_port()}",
             "mt5_login": None, "mt5_server": None, "mt5_password": None})
         client = RemoteMT5Client(env, self.cfg.get("trading.mt5_time_zone", "UTC"))
         client.http.timeout = httpx.Timeout(3)
         return client
 
-    @staticmethod
-    def bridge_running():
+    def bridge_running(self):
         try:
-            with socket.create_connection(("127.0.0.1", 18765), timeout=.5):
+            with socket.create_connection(("127.0.0.1", self.bridge_port()), timeout=.5):
                 return True
         except OSError:
             return False
@@ -219,7 +225,19 @@ class DesktopRuntime:
             client.shutdown()
 
     def login(self, request):
+        with self.operation_lock:
+            return self._login(request)
+
+    def _login(self, request):
         path = self.resolve_terminal_path(request)
+        if self.account:
+            if (self.account['login'], self.account['server']) != (request.login, request.server):
+                raise AccountError('هر حساب باید به محیط مستقل خودش وارد شود؛ تعویض حساب روی این متاتریدر مجاز نیست.')
+            if self.bridge_running():
+                # Re-authenticate the broker password without stopping the engine,
+                # rotating other browser sessions, or resetting its history window.
+                self.authenticate_account(request, path)
+                return dict(self.account, started_at=self.started_at, scope=self.scope())
         if not self.account and not self.bridge_running():
             self.cfg.env.mt5_path = path
         self.check_switch(self.snapshot(), request)
@@ -240,11 +258,12 @@ class DesktopRuntime:
         self.started_at = time.time()
         try:
             self.launch_bridge(request, path)
-            self.compose("up", "-d", "--no-build", "trader", account=account)
+            if not self.stopped_flag().exists():
+                self.compose("up", "-d", "--no-build", "trader", account=account)
         except Exception:
             self.stop_bridge()
             raise
-        if os.environ.get("NOA_AUTO_LOGIN_FLAG"):
+        if not self.stopped_flag().exists() and os.environ.get("NOA_AUTO_LOGIN_FLAG"):
             Path(os.environ["NOA_AUTO_LOGIN_FLAG"]).touch()
         return dict(account, started_at=self.started_at, scope=self.scope())
 
@@ -267,7 +286,33 @@ class DesktopRuntime:
                 pass
             finally:
                 client.shutdown()
-        return {"connected": connected, "account": self.account, "scope": self.scope(), "started_at": self.started_at}
+        return {"connected": connected, "account": self.account, "scope": self.scope(), "started_at": self.started_at,
+            "trading_requested": not self.stopped_flag().exists(), "view_api": True,
+            "live_enabled": self.trading_enabled()}
+
+    def view(self):
+        if not self.account:
+            raise AccountError('ابتدا وارد حساب شوید.')
+        from monitoring.runtime_view import read_runtime
+        return read_runtime(self.cfg.env.database_url, scope=self.scope(), since=self.started_at)
+
+    def stop_trading(self):
+        with self.operation_lock:
+            flag = self.stopped_flag()
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.touch(mode=0o600)
+            if os.environ.get('NOA_AUTO_LOGIN_FLAG'):
+                Path(os.environ['NOA_AUTO_LOGIN_FLAG']).unlink(missing_ok=True)
+            self.compose('stop', 'trader')
+
+    def start_trading(self):
+        with self.operation_lock:
+            if not self.account or not self.bridge_running():
+                raise AccountError('ابتدا اتصال حساب خود را بازیابی کنید.')
+            self.compose('up', '-d', '--no-build', 'trader', account=self.account)
+            self.stopped_flag().unlink(missing_ok=True)
+            if os.environ.get('NOA_AUTO_LOGIN_FLAG'):
+                Path(os.environ['NOA_AUTO_LOGIN_FLAG']).touch(mode=0o600)
 
     def logout(self):
         self.compose("stop", "trader")
@@ -280,48 +325,84 @@ class DesktopRuntime:
 class AccountPortal:
     SESSION_SECONDS = 8 * 60 * 60
 
-    def __init__(self, token, runtime, login_guard=None):
+    def __init__(self, token, runtime, login_guard=None, maintenance_token=None):
         if len(token) < 32:
             raise ValueError("Portal token must be at least 32 characters")
         self.token, self.runtime = token, runtime
-        self.session = None
-        self.session_created_at = 0.0
+        self.sessions = {}
+        self.lock = RLock()
         self.attempts = deque()
         self.stop_requested = False
         self.login_guard = login_guard
+        self.maintenance_token = maintenance_token
 
     def authorized(self, header):
         return hmac.compare_digest((header or "").encode("utf-8"), ("Bearer " + self.token).encode("utf-8"))
 
     def session_valid(self, session):
-        if time.monotonic() - self.session_created_at >= self.SESSION_SECONDS:
-            self.session = None
-        return bool(self.session and session and hmac.compare_digest(self.session.encode("utf-8"), session.encode("utf-8")))
+        if not isinstance(session, str) or not 20 <= len(session) <= 128:
+            return False
+        with self.lock:
+            now = time.monotonic()
+            self.sessions = {key: value for key, value in self.sessions.items() if now-value[0] < self.SESSION_SECONDS}
+            return session in self.sessions
 
-    def dispatch(self, path, payload, session):
+    def session_runtime(self, session):
+        if not self.session_valid(session):
+            raise AccountError('نشست پایان یافته است؛ دوباره وارد شوید.')
+        with self.lock:
+            entry=self.sessions.get(session)
+            if entry is None:
+                raise AccountError('نشست پایان یافته است؛ دوباره وارد شوید.')
+            return entry[1]
+
+    def dispatch(self, path, payload, session, *, maintenance=False):
         if path == "/status":
             if not session:
-                return {"ok": True, "ready": True}
-            return {"ok": True, **self.runtime.status()}
+                policy = self.runtime.policy() if hasattr(self.runtime, 'policy') else {}
+                return {"ok": True, "ready": True, **policy}
+            return {"ok": True, **self.session_runtime(session).status()}
+        if path == '/view':
+            return {'ok': True, 'view': self.session_runtime(session).view()}
         if path == "/login":
-            now = time.monotonic()
-            while self.attempts and self.attempts[0] < now - 60:
-                self.attempts.popleft()
-            if len(self.attempts) >= 5:
-                raise AccountError("تعداد تلاش‌های ورود زیاد است؛ یک دقیقه صبر کنید.")
-            self.attempts.append(now)
+            with self.lock:
+                now = time.monotonic()
+                while self.attempts and self.attempts[0] < now - 60:
+                    self.attempts.popleft()
+                if len(self.attempts) >= 5:
+                    raise AccountError("تعداد تلاش‌های ورود زیاد است؛ یک دقیقه صبر کنید.")
+                self.attempts.append(now)
             request = AccountLogin.parse(payload)
             if self.login_guard:
                 self.login_guard(request)
-            self.session = None
-            account = self.runtime.login(request)
-            self.session = secrets.token_urlsafe(32)
-            self.session_created_at = time.monotonic()
-            return {"ok": True, "session": self.session, "account": account}
-        if path in {"/logout", "/shutdown"}:
+            runtime = self.runtime.for_account(request) if hasattr(self.runtime, 'for_account') else self.runtime
+            account = runtime.login(request)
+            new_session = secrets.token_urlsafe(32)
+            with self.lock:
+                self.session_valid(new_session)  # Prune expired sessions, without touching any runtime.
+                if len(self.sessions) >= 1024:
+                    raise AccountError('تعداد نشست‌های فعال به سقف رسیده است؛ کمی بعد دوباره تلاش کنید.')
+                self.sessions[new_session] = (time.monotonic(), runtime)
+            return {"ok": True, "session": new_session, "account": account}
+        if path == '/logout':
+            self.session_runtime(session)
+            with self.lock:
+                self.sessions.pop(session, None)
+            return {'ok': True}
+        if path in {'/stop', '/start'}:
+            runtime = self.session_runtime(session)
+            if path == '/stop':
+                runtime.stop_trading()
+            else:
+                runtime.start_trading()
+            return {'ok': True}
+        if path == '/shutdown':
+            # Maintenance is never available through a dashboard bearer token.
+            if not maintenance:
+                raise AccountError('توقف سرویس فقط از مسیر نگهداری میزبان مجاز است.')
             self.runtime.logout()
-            self.session = None
-            self.stop_requested = path == "/shutdown"
+            self.sessions.clear()
+            self.stop_requested = True
             return {"ok": True}
         raise AccountError("درخواست پشتیبانی نمی‌شود.")
 
@@ -366,12 +447,12 @@ def handler_for(portal):
             if not portal.authorized(self.headers.get("Authorization")) or self.headers.get("Origin"):
                 self.respond(403, {"ok": False, "error": "Forbidden"})
                 return
-            routes = {"/login", "/logout", "/shutdown"} if post else {"/status"}
+            routes = {"/login", "/logout", "/stop", "/start", "/shutdown"} if post else {"/status", "/view"}
             if self.path not in routes:
                 self.respond(404, {"ok": False, "error": "Not found"})
                 return
             session = self.headers.get("X-Account-Session")
-            if (self.path == "/logout" or (self.path == "/status" and session)) and not portal.session_valid(session):
+            if (self.path in {'/logout', '/stop', '/start', '/view'} or (self.path == "/status" and session)) and not portal.session_valid(session):
                 self.respond(401, {"ok": False, "expired": True})
                 return
             try:
@@ -387,7 +468,9 @@ def handler_for(portal):
                     if len(raw) != size:
                         raise AccountError("Incomplete request")
                     payload = json.loads(raw)
-                result = portal.dispatch(self.path, payload, session)
+                maintenance = bool(portal.maintenance_token and hmac.compare_digest(
+                    (self.headers.get('X-Maintenance-Token') or '').encode(), portal.maintenance_token.encode()))
+                result = portal.dispatch(self.path, payload, session, maintenance=maintenance)
                 self.respond(200, result)
             except AccountError as exc:
                 self.respond(400, {"ok": False, "error": str(exc)})
@@ -425,23 +508,35 @@ def main():
         from dashboard.account_client import AccountPortalClient, PortalUnavailable
         client = AccountPortalClient("http://127.0.0.1:18766", cfg.env.account_portal_token_file)
         try:
-            result = client.request("/shutdown", payload={}) if args.stop else client.request("/status")
+            maintenance_path=Path(os.environ.get('NOA_MAINTENANCE_TOKEN_FILE', str(Path(cfg.env.account_portal_token_file).with_name('maintenance.token'))))
+            result = client.request("/shutdown", payload={}, maintenance=maintenance_path.read_text().strip()) if args.stop else client.request("/status")
             raise SystemExit(0 if result.get("ok") else 1)
         except PortalUnavailable:
             raise SystemExit(1) from None
     cfg.validate_runtime()
     state = Path(os.environ.get('NOA_HOST_STATE_DIR', str(ROOT / '.docker')))
     with RuntimeLock(state / "portal.lock"):
-        runtime = DesktopRuntime(cfg)
+        runtime = DesktopRuntime(cfg, root=Path(os.environ.get('NOA_RUNTIME_ROOT', str(ROOT))))
         if os.environ.get("NOA_MT5_RUNTIME") == "wine":
             from core.wine_runtime import WineRuntime
-            runtime = WineRuntime(cfg)
+            runtime = WineRuntime(cfg, root=Path(os.environ.get('NOA_RUNTIME_ROOT', str(ROOT))))
         guard = None
         if os.environ.get("NOA_PORTAL_ACCESS_FILE"):
             from core.portal_access import account_guard
-            guard = account_guard(os.environ["NOA_PORTAL_ACCESS_FILE"])
-        portal = AccountPortal(token, runtime, guard)
-        with PortalServer(("127.0.0.1", 18766), handler_for(portal)) as server:
+            if os.environ.get('NOA_MULTI_TENANT') == '1':
+                record=json.loads(Path(os.environ['NOA_PORTAL_ACCESS_FILE']).read_text())
+                def guard(request):
+                    if (request.login,request.server,request.account_type)!=(record['login'],record['server'],record['account_type']) or request.terminal_path:
+                        raise AccountError('این محیط فقط به حساب اختصاصی خود متصل می‌شود.')
+            else:
+                guard = account_guard(os.environ["NOA_PORTAL_ACCESS_FILE"])
+        maintenance_path=Path(os.environ.get('NOA_MAINTENANCE_TOKEN_FILE',str(Path(cfg.env.account_portal_token_file).with_name('maintenance.token'))))
+        if not maintenance_path.exists():
+            with maintenance_path.open('x') as handle:
+                os.chmod(maintenance_path,0o600)
+                handle.write(secrets.token_urlsafe(48))
+        portal = AccountPortal(token, runtime, guard, maintenance_path.read_text().strip())
+        with PortalServer(("127.0.0.1", int(os.environ.get('NOA_ACCOUNT_PORTAL_PORT','18766'))), handler_for(portal)) as server:
             print("Account portal ready on 127.0.0.1:18766; waiting for browser login.", flush=True)
             server.serve_forever()
 

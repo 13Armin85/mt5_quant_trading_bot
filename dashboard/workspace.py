@@ -127,8 +127,8 @@ def quote_rows(quotes, filter_name):
 def overview(cfg, heartbeat, view, account):
     quotes = heartbeat.get("quotes") or {}
     counts = Counter(q.get("status", "UNAVAILABLE") for q in quotes.values())
-    main, details = st.columns([1.8, 1], gap="large")
-    with main:
+    details, main = st.columns([1, 1.8], gap="large")
+    with main, st.container(key="noa_market_card"):
         section("دیده‌بان بازار", "قیمت‌ها و وضعیت دسترسی نمادهای متصل به حساب شما.", "MARKET WATCH")
         st.markdown('<div class="nv-inline-status">' + badge(f'{fa(counts["FRESH"])} قیمت تازه', "good") + badge(f'{fa(counts["MARKET_CLOSED"])} بازار بسته') + badge(f'{fa(len(quotes))} نماد') + '</div>', unsafe_allow_html=True)
         selected = st.selectbox("نمایش نمادها", ["همه نمادها", "قیمت تازه", "بازار بسته", "نیازمند بررسی"], key="noatech_quote_filter", label_visibility="collapsed")
@@ -153,6 +153,9 @@ def overview(cfg, heartbeat, view, account):
         news = heartbeat.get("news") or {}
         news_ready = bool(news.get("background_running") and news.get("calendar_ok") and not news.get("last_error") and not news.get("worker_error") and not news.get("unavailable_headline_currencies"))
         st.markdown(f'<div class="nv-card"><div class="nv-card-head"><span>{icon("globe")}اخبار و تقویم</span>{badge("به‌روز" if news_ready else "در انتظار بررسی", "good" if news_ready else "warn")}</div><p>وضعیت منابع و رویدادهای پیش رو را در بخش «اخبار بازار» دنبال کنید.</p></div>', unsafe_allow_html=True)
+
+
+def decision_summary(heartbeat):
     decision = heartbeat.get("last_decision") or {}
     if not isinstance(decision, dict):
         decision = {}
@@ -185,11 +188,11 @@ def analysis_panel(cfg, analyses):
             data = [{"استراتژی": translated(a.get("strategy"),STRATEGIES), "امتیاز": number(a.get("score")) or 0,
                 "جهت": translated(a.get("direction")), "شرایط ورود": "تأییدشده" if a.get("eligible") else "تأیید نشده"} for a in assessments]
             fig = go.Figure(go.Bar(x=[a["امتیاز"] for a in data], y=[a["استراتژی"] for a in data], orientation="h",
-                marker_color=["#79d6c2" if a.get("eligible") else "#a591d6" for a in assessments],
+                marker_color=["#816BFF" if a.get("eligible") else "#565B6E" for a in assessments],
                 hovertemplate="%{y}<br>امتیاز: %{x:.2f}<extra></extra>"))
             fig.update_layout(height=max(245, len(data)*26+40), margin=dict(l=10,r=20,t=10,b=20),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",color="#a8acc5",size=11),
-                xaxis=dict(range=[0,1],gridcolor="#292d41",zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Vazirmatn",color="#A0A5B6",size=11),
+                xaxis=dict(range=[0,1],gridcolor="#242735",zeroline=False),yaxis=dict(autorange="reversed",gridcolor="rgba(0,0,0,0)"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False}, key="noatech_strategy_chart")
             st.dataframe(data, width="stretch", hide_index=True)
         else:
@@ -260,7 +263,7 @@ def news_panel(news):
         url = str(row.get("url", ""))
         title = e(row.get("title", ""))
         if urlparse(url).scheme in {"http","https"}:
-            title = f'<a href="{e(url)}" target="_blank" rel="noopener noreferrer" style="color:#d1c3f3;text-decoration:none">{title}</a>'
+            title = f'<a href="{e(url)}" target="_blank" rel="noopener noreferrer" class="nv-news-link">{title}</a>'
         st.markdown(f'<div class="nv-card"><div class="nv-card-head"><span>{e(row.get("source",""))}</span><span>{e(stamp(row.get("time"),full=True))}</span></div><h4 style="font-size:13px;line-height:1.9;direction:auto">{title}</h4><p>{e(row.get("currency",""))} · اهمیت {e(translated(row.get("impact")))}</p></div>',unsafe_allow_html=True)
 
 
@@ -296,6 +299,7 @@ def render_workspace(cfg, status, view):
     st.markdown(f'<div class="nv-page-heading"><div><span class="nv-eyebrow">NOATECH / WORKSPACE</span><h1>نمای کلی میزکار</h1><p>تصویری روشن از حساب، بازار و تصمیم‌های ربات.</p></div><div class="nv-clock">{fa(now.astimezone(TEHRAN).strftime("%H:%M"))}<span>به وقت تهران · به‌روزرسانی خودکار</span></div></div>',unsafe_allow_html=True)
     if heartbeat.get("phase")=="starting":
         st.info("حساب متصل است؛ نواتک داده‌های بازار را برای اولین تحلیل آماده می‌کند.")
+    decision_summary(heartbeat)
     render_metrics(heartbeat,view.get("positions") or [],account,age)
     overview_tab,analysis_tab,news_tab,trades_tab = st.tabs(["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات"])
     with overview_tab:

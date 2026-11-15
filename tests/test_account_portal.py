@@ -125,11 +125,13 @@ def test_http_login_status_logout_and_session_revocation(portal_http):
     assert client.request("/status", session=first["session"])["connected"]
     second = client.request("/login", payload=payload())
     assert second["session"] != first["session"]
-    assert client.request("/status", session=first["session"])["expired"]
+    assert client.request("/status", session=first["session"])["connected"]
     assert client.request("/logout", payload={}, session="invalid")["expired"]
     assert runtime.stops == 0
     assert client.request("/logout", payload={}, session=second["session"])["ok"]
-    assert runtime.stops == 1 and portal.session is None
+    assert runtime.stops == 0
+    assert client.request('/status', session=second['session'])['expired']
+    assert client.request('/status', session=first['session'])['connected']
 
 
 def test_http_rejects_unauthorized_origin_and_oversize_body(portal_http):
@@ -164,8 +166,9 @@ def test_login_attempts_are_rate_limited(portal_http):
 def test_expired_session_cannot_read_account_or_stop_runtime(portal_http, monkeypatch):
     portal, runtime, _, client = portal_http
     session = client.request('/login', payload=payload())['session']
+    created_at=portal.sessions[session][0]
     monkeypatch.setattr('core.account_portal.time.monotonic',
-                        lambda: portal.session_created_at + portal.SESSION_SECONDS + 1)
+                        lambda: created_at + portal.SESSION_SECONDS + 1)
     assert client.request('/status', session=session)['expired']
     assert client.request('/logout', payload={}, session=session)['expired']
     assert runtime.stops == 0
@@ -174,9 +177,6 @@ def test_expired_session_cannot_read_account_or_stop_runtime(portal_http, monkey
 def test_non_ascii_authentication_is_rejected_without_crashing(portal_http):
     portal, _, _, _ = portal_http
     assert not portal.authorized('Bearer رمز')
-    portal.session = 'session'
-    import time
-    portal.session_created_at = time.monotonic()
     assert not portal.session_valid('نشست')
 
 

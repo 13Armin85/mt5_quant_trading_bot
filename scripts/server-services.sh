@@ -25,7 +25,7 @@ chmod 2770 "$app/.docker/data" "$app/.docker/control" "$app/logs" "$app/reports"
 python3 - <<'PY'
 import grp,os,secrets
 from pathlib import Path
-for name in ('bridge','portal'):
+for name in ('bridge','portal','maintenance'):
     path=Path('/etc/noatech')/(name+'.token')
     if path.is_symlink():
         raise SystemExit('Secret file must not be a symlink')
@@ -66,6 +66,9 @@ OPENBLAS_NUM_THREADS=1
 OMP_NUM_THREADS=1
 ENV
 printf 'NOA_SERVICE_GID=%s\n' "$(id -g noatech)" >> /etc/noatech/environment
+if [[ -f /etc/noatech/tenants-policy.json ]]; then
+    printf 'NOA_MULTI_TENANT=1\nNOA_GATEWAY_GID=%s\n' "$(id -g noagate)" >> /etc/noatech/environment
+fi
 if [[ -x /opt/wine-devel/bin/wine ]]; then
     printf 'NOA_WINE=/opt/wine-devel/bin/wine\n' >> /etc/noatech/environment
 fi

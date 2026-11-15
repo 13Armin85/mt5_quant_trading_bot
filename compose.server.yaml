@@ -48,7 +48,7 @@ services:
       options: {max-size: 10m, max-file: "3"}
   dashboard:
     image: noatech:server
-    user: "10001:${NOA_SERVICE_GID:-10001}"
+    user: "10001:${NOA_GATEWAY_GID:-10001}"
     init: true
     restart: unless-stopped
     network_mode: host
@@ -57,14 +57,12 @@ services:
     environment:
       DATABASE_URL: sqlite:////app/data/trading_bot.db
       ENABLE_LIVE_TRADING: "false"
-      ACCOUNT_PORTAL_URL: http://127.0.0.1:18766
+      ACCOUNT_PORTAL_URL: http://127.0.0.1:18767
       ACCOUNT_PORTAL_TOKEN_FILE: /run/secrets/account_portal_token
+      NOA_REQUIRE_VIEW_API: "1"
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
     secrets: [account_portal_token]
-    volumes:
-      - ./.docker/data:/app/data:ro
-      - ./config:/app/config:ro
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -86,4 +84,4 @@ services:
       retries: 3
 secrets:
   mt5_bridge_token: {file: /etc/noatech/bridge.token}
-  account_portal_token: {file: /etc/noatech/portal.token}
+  account_portal_token: {file: /etc/noatech-gateway/token}

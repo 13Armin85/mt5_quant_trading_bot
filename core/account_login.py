@@ -31,7 +31,7 @@ class AccountLogin:
         if not re.fullmatch(r"[0-9]{1,18}", digits) or int(digits) <= 0:
             raise AccountError("شماره حساب معاملاتی MT5 را وارد کنید؛ ایمیل پروفایل قابل استفاده نیست.")
         password = payload.get("password")
-        if not isinstance(password, str) or not password or len(password) > 256 or "\x00" in password:
+        if not isinstance(password, str) or not password or len(password) > 256 or any(c in password for c in '\x00\r\n'):
             raise AccountError("رمز معاملاتی حساب را وارد کنید.")
         server = payload.get("server") or SERVERS[kind]
         if not isinstance(server, str) or not re.fullmatch(r"LiteFinance[A-Za-z0-9_. -]{1,80}", server):

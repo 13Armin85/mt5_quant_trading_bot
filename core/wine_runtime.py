@@ -94,8 +94,8 @@ class WineRuntime(DesktopRuntime):
         if not directory or self.terminal_running():
             yield
             return
-        if request.account_type!='demo' or any(c in request.password for c in '\r\n\x00'):
-            raise AccountError('راه‌اندازی خودکار فقط برای حساب دموی معتبر مجاز است.')
+        if request.account_type not in {'demo','real'} or any(c in request.password for c in '\r\n\x00'):
+            raise AccountError('اطلاعات راه‌اندازی حساب معتبر نیست.')
         # The startup credential is confined to a 0700 systemd RuntimeDirectory
         # on /run. No password is placed in argv or persisted in the Wine prefix.
         fd,name=tempfile.mkstemp(prefix='owner-',suffix='.ini',dir=directory)
@@ -118,7 +118,8 @@ class WineRuntime(DesktopRuntime):
         # Let Wine finish its first-process bootstrap before starting another
         # Windows process. Otherwise its service children can inherit the SDK
         # probe's pipes and prevent communicate() from reaching EOF.
-        pattern=f'^{request.login} - {re.escape(request.server)}: Demo Account -'
+        kind = 'Demo' if request.account_type == 'demo' else 'Real'
+        pattern=f'^{request.login} - {re.escape(request.server)}: {kind} Account -'
         deadline=time.monotonic()+50
         while time.monotonic()<deadline:
             result=subprocess.run(['xdotool','search','--onlyvisible','--name',pattern],
@@ -153,5 +154,5 @@ class WineRuntime(DesktopRuntime):
         return Path(os.environ.get('NOA_DEMO_TRADING_FLAG','/etc/noatech/demo-trading.enabled')).is_file()
 
     def bridge_command(self):
-        command = [*self.wine_command(), "-m", "core.mt5_bridge", "--session-stdin"]
+        command = [*self.wine_command(), "-m", "core.mt5_bridge", "--session-stdin", '--port', str(self.bridge_port())]
         return [*command,'--allow-live'] if self.trading_enabled() else command

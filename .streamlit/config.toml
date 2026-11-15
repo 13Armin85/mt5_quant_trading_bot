@@ -1,15 +1,15 @@
 [theme]
 base = "dark"
-primaryColor = "#b7a5f5"
-backgroundColor = "#0b0d17"
-secondaryBackgroundColor = "#171a2a"
-textColor = "#ecebf5"
+primaryColor = "#816BFF"
+backgroundColor = "#090B12"
+secondaryBackgroundColor = "#161824"
+textColor = "#F5F5F8"
 font = "Vazirmatn, sans-serif"
 headingFont = "Vazirmatn, sans-serif"
 baseFontSize = 14
 baseFontWeight = 400
 metricValueFontSize = "1.9rem"
-metricValueFontWeight = 600
+metricValueFontWeight = 800
 
 [[theme.fontFaces]]
 family = "Vazirmatn"

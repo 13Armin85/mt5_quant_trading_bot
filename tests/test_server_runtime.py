@@ -26,10 +26,10 @@ def test_public_owner_gate_rejects_before_stopping_runtime_or_revoking_session(t
     calls=[]
     runtime=SimpleNamespace(login=lambda value:calls.append(value.login) or {'login':value.login})
     portal=AccountPortal('test-token-'*8,runtime,account_guard(path))
-    portal.session='existing-session'
+    portal.sessions['existing-session']=(__import__('time').monotonic(),runtime)
     with pytest.raises(AccountError):
         portal.dispatch('/login',{'login':'12345','password':'wrong','account_type':'demo'},None)
-    assert not calls and portal.session=='existing-session'
+    assert not calls and 'existing-session' in portal.sessions
     assert portal.dispatch('/login',{'login':'12345','password':'test-only-password','account_type':'demo'},None)['ok']
     assert calls==[12345]
 

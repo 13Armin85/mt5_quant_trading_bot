@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 
 import streamlit as st
 
@@ -32,8 +33,18 @@ def render():
         st.error("ارتباط با سرویس اتصال قطع شده است. وضعیت برنامه و متاتریدر را بررسی کنید.")
         return
     try:
-        view = read_runtime(cfg.env.database_url, scope=status.get("scope"), since=status.get("started_at"))
-    except (OSError, sqlite3.Error, ValueError):
+        if status.get('view_api') or os.environ.get('NOA_REQUIRE_VIEW_API') == '1':
+            response = portal_client(cfg).request('/view', session=st.session_state.get('account_session'))
+            if not response.get('ok'):
+                if response.get('expired'):
+                    st.session_state.pop('account_session', None)
+                    st.rerun()
+                st.error('داده‌های حساب در دسترس نیست؛ اتصال همین حساب را بررسی کنید.')
+                return
+            view = response['view']
+        else:
+            view = read_runtime(cfg.env.database_url, scope=status.get("scope"), since=status.get("started_at"))
+    except (OSError, sqlite3.Error, ValueError, PortalUnavailable):
         view = {"heartbeat":None,"analyses":[],"positions":[],"trades":[]}
         st.info("میزکار در حال آماده شدن است؛ دریافت اولین داده‌ها ممکن است کمی زمان ببرد.")
     render_workspace(cfg,status,view)

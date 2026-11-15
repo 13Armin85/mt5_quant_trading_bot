@@ -9,9 +9,8 @@ import streamlit as st
 ASSETS = Path(__file__).parent / "assets"
 
 
-@lru_cache(maxsize=1)
 def stylesheet():
-    return (ASSETS / "noatech.css").read_text(encoding="utf-8")
+    return (ASSETS / "noatech.css").read_text(encoding="utf-8-sig")
 
 
 @lru_cache(maxsize=1)
