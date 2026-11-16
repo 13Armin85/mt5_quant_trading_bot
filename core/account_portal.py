@@ -309,7 +309,16 @@ class DesktopRuntime:
         if not self.account:
             raise AccountError('ابتدا وارد حساب شوید.')
         from monitoring.runtime_view import read_runtime
-        return read_runtime(self.cfg.env.database_url, scope=self.scope(), since=self.started_at)
+        from monitoring.profit_loss import mark_open_positions
+        view = read_runtime(self.cfg.env.database_url, scope=self.scope(), since=self.started_at)
+        if not view.get('positions'):
+            return view
+        from core.symbol_policy import commission_per_lot, trading_policy
+        client = self.bridge_client()
+        def paper_commission(symbol, price):
+            policy = trading_policy(symbol, self.cfg.get('trading', {}), self.cfg.symbols)
+            return commission_per_lot(client, symbol, policy, price)
+        return mark_open_positions(view, client, self.account, paper_commission=paper_commission)
 
     def stop_trading(self):
         with self.operation_lock:

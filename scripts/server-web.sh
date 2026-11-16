@@ -6,7 +6,19 @@ if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 cat > /etc/nginx/conf.d/noatech-security.conf <<'CONF'
-limit_req_zone $binary_remote_addr zone=noatech_requests:10m rate=10r/s;
+# Streamlit loads many small JS chunks on a fresh browser. Give public static
+# files their own bounded budget so they cannot exhaust the account/WS budget.
+# An empty key is not counted by limit_req.
+map $uri $noatech_request_key {
+    default $binary_remote_addr;
+    ~^/static/ "";
+}
+map $uri $noatech_asset_key {
+    default "";
+    ~^/static/ $binary_remote_addr;
+}
+limit_req_zone $noatech_request_key zone=noatech_dynamic:10m rate=10r/s;
+limit_req_zone $noatech_asset_key zone=noatech_assets:10m rate=50r/s;
 limit_conn_zone $binary_remote_addr zone=noatech_connections:10m;
 CONF
 cat > /etc/nginx/sites-available/noatech <<CONF
@@ -44,7 +56,8 @@ server {
     client_body_timeout 15s;
     client_header_timeout 15s;
     send_timeout 30s;
-    limit_req zone=noatech_requests burst=60 nodelay;
+    limit_req zone=noatech_dynamic burst=60 nodelay;
+    limit_req zone=noatech_assets burst=250 nodelay;
     limit_req_status 429;
     limit_conn noatech_connections 30;
     add_header X-Content-Type-Options nosniff always;

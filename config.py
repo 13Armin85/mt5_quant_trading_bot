@@ -133,6 +133,15 @@ class AppConfig(BaseModel):
                     or not math.isfinite(net_rr) or net_rr < float(self.get("trading.min_rr", 1.5))
                     or type(groups) is not int or not 2 <= groups <= 4):
                 raise ValueError("Invalid strong-setup confirmation thresholds")
+            cautious = float(quality.get("cautious_risk_per_trade", base))
+            normal_confidence = float(quality.get("normal_min_confidence", self.get("trading.min_confidence", .70)))
+            normal_suitability = float(quality.get("normal_min_suitability", self.get("strategy.selection.minimum_score", .65)))
+            trend_adx = float(quality.get("min_trend_adx", 25))
+            if (not math.isfinite(cautious) or not 0 < cautious <= base
+                    or not math.isfinite(normal_confidence) or not float(self.get("trading.min_confidence", .70)) <= normal_confidence <= confidence
+                    or not math.isfinite(normal_suitability) or not float(self.get("strategy.selection.minimum_score", .65)) <= normal_suitability <= suitability
+                    or not math.isfinite(trend_adx) or not 20 <= trend_adx <= 100):
+                raise ValueError("Invalid adaptive sizing policy")
         for key, default in (("poll_seconds", 2), ("max_tick_age_seconds", 15), ("max_spread_points", 40)):
             value = float(self.get(f"trading.{key}", default))
             if not math.isfinite(value) or value <= 0:

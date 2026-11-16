@@ -188,6 +188,41 @@ def test_unknown_journal_reconciles_to_position(live_engine, broker):
     assert live_engine.repo.attempts(live_engine.scope)[0].status == "OPEN"
 
 
+@pytest.mark.parametrize('side',[Direction.BUY,Direction.SELL])
+def test_broker_float_representation_does_not_close_a_protected_position(live_engine,broker,side):
+    import math
+    req=request('float-noise-'+side.value)
+    if side==Direction.SELL:
+        req.direction=side;req.sl=1.101;req.tp=1.095
+    assert live_engine.execute(req).success
+    position=broker.positions[0]
+    position.sl=math.nextafter(position.sl,-math.inf if side==Direction.BUY else math.inf)
+    live_engine.reconcile()
+    assert live_engine.repo.attempts(live_engine.scope)[0].status=='OPEN'
+    assert len(broker.sent)==1 and broker.positions
+
+
+@pytest.mark.parametrize('side',[Direction.BUY,Direction.SELL])
+def test_one_tick_wider_stop_still_triggers_protective_exit(live_engine,broker,side):
+    req=request('wider-stop-'+side.value)
+    if side==Direction.SELL:
+        req.direction=side;req.sl=1.101;req.tp=1.095
+    assert live_engine.execute(req).success
+    position=broker.positions[0]
+    position.sl+=(-1 if side==Direction.BUY else 1)*broker.info.trade_tick_size
+    live_engine.reconcile()
+    assert len(broker.sent)==2 and broker.sent[-1]['position']==position.ticket
+    assert not broker.positions
+
+
+@pytest.mark.parametrize('stop',[0,float('nan'),float('inf')])
+def test_invalid_stop_still_triggers_protective_exit(live_engine,broker,stop):
+    assert live_engine.execute(request('invalid-stop')).success
+    broker.positions[0].sl=stop
+    live_engine.reconcile()
+    assert len(broker.sent)==2 and not broker.positions
+
+
 def test_kill_switch_blocks_entries(live_engine, broker):
     live_engine.kill_switch_path.touch()
     assert not live_engine.execute(request()).success and not broker.sent

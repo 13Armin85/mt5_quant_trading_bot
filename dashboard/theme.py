@@ -92,8 +92,18 @@ def section(title, subtitle="", eyebrow=""):
     st.markdown(f'<div class="nv-section"><div><span class="nv-eyebrow">{e(eyebrow)}</span><h3>{e(title)}</h3><p>{e(subtitle)}</p></div></div>', unsafe_allow_html=True)
 
 
-def empty_state(title, description, symbol="activity"):
-    st.markdown(f'<div class="nv-empty"><div>{icon(symbol,26)}</div><h4>{e(title)}</h4><p>{e(description)}</p></div>', unsafe_allow_html=True)
+def empty_state(title, description, symbol="activity", *, fields=()):
+    preview = ''
+    if fields:
+        preview = '<div class="nv-empty-fields" aria-hidden="true">'+''.join(
+            f'<div><span>{e(label)}</span><b>—</b></div>' for label in fields)+'</div>'
+    st.markdown(
+        f'<section class="nv-empty" aria-label="{e(title)}">'
+        f'<div class="nv-empty-body"><span class="nv-empty-symbol">{icon(symbol,24)}</span>'
+        f'<div class="nv-empty-copy"><h4>{e(title)}</h4><p>{e(description)}</p></div></div>'
+        +preview+f'<div class="nv-empty-note">{icon("clock",14)}'
+        '<span>با ثبت داده، این بخش خودکار به‌روز می‌شود.</span></div></section>',
+        unsafe_allow_html=True)
 
 
 def strategy_empty_state():

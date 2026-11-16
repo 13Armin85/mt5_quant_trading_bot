@@ -22,7 +22,7 @@ STATES = {
     "PROTECTION_FAILURE": "نیازمند بررسی حفاظت", "SIGNAL": "سیگنال", "ACTIVE": "فعال",
     "PAUSED": "متوقف", "LOW": "کم", "MEDIUM": "متوسط", "HIGH": "زیاد",
     "TRENDING": "رونددار", "RANGING": "رنج", "VOLATILE": "پرنوسان", "UNCERTAIN": "نامشخص",
-    "BASE": "پایه", "STRONG_SETUP": "ستاپ قوی", "baseline": "نمای پایه",
+    "BASE": "عادی", "CAUTIOUS": "محافظه‌کار", "STRONG_SETUP": "ستاپ قوی", "baseline": "نمای پایه",
     "scalping": "اسکالپ", "intraday": "روزانه",
     "TRENDING_BULLISH": "روند صعودی", "TRENDING_BEARISH": "روند نزولی", "HIGH_VOLATILITY": "نوسان زیاد",
     "LOW_VOLATILITY": "نوسان کم", "BREAKOUT": "شکست محدوده", "NEWS_EVENT": "رویداد خبری",
@@ -267,26 +267,57 @@ def news_panel(news):
         st.markdown(f'<div class="nv-card"><div class="nv-card-head"><span>{e(row.get("source",""))}</span><span>{e(stamp(row.get("time"),full=True))}</span></div><h4 style="font-size:13px;line-height:1.9;direction:auto">{title}</h4><p>{e(row.get("currency",""))} · اهمیت {e(translated(row.get("impact")))}</p></div>',unsafe_allow_html=True)
 
 
-def trades_panel(view):
+def render_profit_loss(view, currency=""):
+    pnl = view.get("pnl") or {}
+    suffix = f" · {currency}" if currency else ""
+    for column, label, key in zip(st.columns(3),
+            ("سود و ضرر کل ربات", "سود و ضرر معاملات بسته", "سود و ضرر پوزیشن‌های باز"),
+            ("total_net", "closed_net", "open_net")):
+        value = number(pnl.get(key))
+        # Isolate the sign with its number inside the Persian RTL layout.
+        display = "\u2066" + fa(f"{value:+,.2f}") + "\u2069" if value is not None else "—"
+        column.metric(label + suffix, display)
+    st.caption("جمع کل از تمام تاریخچهٔ معاملات همین حساب و حالت معاملاتی محاسبه می‌شود. نتیجهٔ معاملات بسته خالصِ کارمزد و سواپ است؛ نتیجهٔ پوزیشن‌های باز تا زمان بسته‌شدن تغییر می‌کند و هزینهٔ احتمالی خروج هنوز قطعی نیست.")
+    if pnl.get("unsettled_count"):
+        st.caption("تسویهٔ بعضی معاملات هنوز کامل نیست؛ مجموع نهایی پس از دریافت نتیجه نمایش داده می‌شود.")
+
+
+def trade_profit(row, positions):
+    if row.get("status") in {"CLOSED", "PAPER_CLOSED"}:
+        return number(row.get("profit"))
+    if row.get("ticket") is None:
+        return None
+    return next((number(p.get("profit")) for p in positions if p.get("ticket") == row["ticket"]), None)
+
+
+def trades_panel(view, currency=""):
     section("معاملات و موقعیت‌ها", "موقعیت‌های ثبت‌شده و آخرین اجراهای همین حساب.", "POSITIONS & EXECUTIONS")
     positions = view.get("positions") or []
+    profit_label = "سود و ضرر خالص" + (f" · {currency}" if currency else "")
+    profit_config = {profit_label: st.column_config.NumberColumn(format="%+.2f")}
     section("پوزیشن‌های باز ربات")
     if positions:
         st.dataframe([{"نماد":row.get("symbol"),"جهت":translated(row.get("direction")),"وضعیت":translated(row.get("status")),
-            "شناسه":str(row.get("ticket","—")),"نمای معاملاتی":translated(row.get("profile","baseline"))} for row in positions],width="stretch",hide_index=True)
+            "شناسه":str(row.get("ticket","—")),profit_label:number(row.get("profit")),
+            "نمای معاملاتی":translated(row.get("profile","baseline"))} for row in positions],width="stretch",hide_index=True,column_config=profit_config)
+        st.caption("نتیجهٔ باز شامل سود و ضرر جاری، هزینه‌های ثبت‌شده و خروج‌های جزئی است. خط تیره یعنی داده یا تسویه هنوز در دسترس نیست.")
     else:
-        empty_state("پوزیشن بازی ثبت نشده است", "هر زمان ربات موقعیتی باز کند، جزئیات آن در این بخش نمایش داده می‌شود.","layers")
+        empty_state("پوزیشن بازی برای ربات ثبت نشده", "با بازشدن موقعیت، نماد، جهت معامله و شناسهٔ آن را همین‌جا می‌بینید.", "layers",
+            fields=("نماد", "جهت", "سود و ضرر", "شناسه"))
     section("تاریخچهٔ اجراها", "آخرین ۱۰۰ رکورد ذخیره‌شدهٔ حساب انتخابی.")
     trades = view.get("trades") or []
     if not trades:
-        empty_state("تاریخچه از اولین اجرا شروع می‌شود", "پس از ثبت سفارش یا نتیجهٔ ارزیابی اجرا، سوابق را اینجا می‌بینید.","clock")
+        empty_state("تاریخچه از اولین اجرا شروع می‌شود", "سفارش‌ها و نتیجهٔ اجراهای این حساب، پس از ثبت در این بخش نمایش داده می‌شوند.", "clock",
+            fields=("زمان", "نماد", "حجم", "سود و ضرر"))
         return
     statuses = sorted({str(row.get("status", "UNKNOWN")) for row in trades})
     choice = st.selectbox("فیلتر وضعیت",["ALL",*statuses],format_func=lambda key:"همهٔ وضعیت‌ها" if key=="ALL" else translated(key),key="noatech_trade_filter")
     records=[row for row in trades if choice=="ALL" or row.get("status")==choice]
     st.dataframe([{"زمان · تهران":stamp(row.get("timestamp"),full=True),"نماد":row.get("symbol"),
         "جهت":translated(row.get("direction")),"حجم · لات":row.get("lot"),"وضعیت":translated(row.get("status")),
-        "امتیاز قواعد":row.get("confidence"),"وضعیت بازار":translated(row.get("market_regime"))} for row in records],width="stretch",hide_index=True)
+        profit_label:trade_profit(row, positions), "شناسه":str(row.get("ticket") or "—"),
+        "امتیاز قواعد":row.get("confidence"),"وضعیت بازار":translated(row.get("market_regime"))} for row in records],width="stretch",hide_index=True,column_config=profit_config)
+    st.caption("عدد مثبت سود و عدد منفی ضرر است. نتیجهٔ ردیف‌های باز موقت است؛ نتیجهٔ نهایی پس از تسویه ثبت می‌شود.")
     with st.expander("جزئیات فنی اجراها"):
         st.dataframe(records,width="stretch",hide_index=True)
 
@@ -303,6 +334,7 @@ def render_workspace(cfg, status, view):
         st.info("حساب متصل است؛ نواتک داده‌های بازار را برای اولین تحلیل آماده می‌کند.")
     decision_summary(heartbeat)
     render_metrics(heartbeat,view.get("positions") or [],account,age)
+    render_profit_loss(view, account.get("currency", ""))
     overview_tab,analysis_tab,news_tab,trades_tab = st.tabs(["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات"])
     with overview_tab:
         overview(cfg,heartbeat,view,account)
@@ -311,7 +343,7 @@ def render_workspace(cfg, status, view):
     with news_tab:
         news_panel(heartbeat.get("news") or {})
     with trades_tab:
-        trades_panel(view)
+        trades_panel(view, account.get("currency", ""))
     with st.expander("جزئیات فنی وضعیت سیستم"):
         st.json(heartbeat)
     st.markdown('<div class="nv-footer"><span>نواتک · تحلیل بازار، پایش معاملات، کنترل ریسک.</span><span>NOATECH / YOUR TRADING WORKSPACE</span></div>',unsafe_allow_html=True)

@@ -25,7 +25,7 @@ def login_app(monkeypatch):
 def test_first_screen_has_default_broker_demo_and_no_runtime_data(login_app):
     app, _ = login_app
     assert not app.exception
-    assert app.selectbox(key="login_broker").value == "LiteFinance"
+    assert any('LiteFinance' in item.value for item in app.markdown)
     assert app.radio(key="login_account_type").value == "demo"
     assert app.text_input(key="login_server_demo").value == SERVERS["demo"]
     assert app.text_input(key="login_password").value == ""

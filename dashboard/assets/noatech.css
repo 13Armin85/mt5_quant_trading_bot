@@ -95,10 +95,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible,[
 .nv-brief>svg { color:var(--nv-link); margin-top:3px; }
 .nv-brief b { color:var(--nv-text); font-size:12px; font-weight:700; }
 .nv-brief p { color:var(--nv-secondary); font-size:11px; line-height:1.9; margin:4px 0 0; }
-.nv-empty { direction:rtl; text-align:center; background:var(--nv-panel-soft); border:1px dashed var(--nv-line); border-radius:12px; padding:32px 20px; margin-bottom:16px; }
-.nv-empty>div { display:grid; place-items:center; width:44px; height:44px; border-radius:12px; background:var(--nv-accent-soft); color:var(--nv-link); margin:0 auto 12px; }
-.nv-empty h4 { color:var(--nv-text); font-size:13px; font-weight:600; margin:0 0 8px; }
-.nv-empty p { color:var(--nv-secondary); font-size:11px; line-height:2; max-width:420px; margin:0 auto; }
+.nv-empty { direction:rtl; text-align:right; background:var(--nv-panel); border:1px solid var(--nv-line); border-radius:12px; padding:24px; margin-bottom:20px; }
 .nv-strategy-empty { direction:rtl; text-align:right; border:1px solid var(--nv-line); border-radius:12px; background:var(--nv-panel); overflow:hidden; margin-bottom:16px; padding:24px; }
 .nv-strategy-empty-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:24px; }
 .nv-strategy-symbol { display:grid; place-items:center; width:44px; height:44px; border:1px solid var(--nv-line); border-radius:12px; background:var(--nv-accent-soft); color:var(--nv-link); }
@@ -242,8 +239,6 @@ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1180px
 .nv-account-id { font-size:22px; font-weight:650; }
 .nv-section { margin:12px 0; }.nv-section h3 { font-size:14px; font-weight:650; }
 .nv-section p { color:var(--nv-muted); }
-.nv-empty { border-style:solid; background:var(--nv-panel); padding:28px 20px; }
-.nv-empty>div { width:36px; height:36px; border-radius:10px; background:var(--nv-panel-soft); color:var(--nv-muted); }
 .nv-strategy-empty-head { margin-bottom:20px; }
 .nv-strategy-empty-copy h4 { font-size:17px; font-weight:650; }
 .nv-strategy-symbol { border:0; background:var(--nv-panel-soft); color:var(--nv-muted); width:36px; height:36px; }
@@ -322,4 +317,25 @@ body:has(.nv-login-page) .nv-footer { border:0; margin-top:32px; padding-top:0; 
  .nv-login-intro h1 br { display:none; }.nv-login-intro h1>span::before { content:' '; }
  .nv-login-intro>p { max-width:none; font-size:11px; margin:0; }
  body:has(.nv-login-page) .nv-footer { margin-top:24px; }
+}
+
+/* Empty records share one quiet, contextual presentation across the workspace. */
+.nv-empty-body { display:flex; align-items:flex-start; gap:16px; }
+.nv-empty-symbol { display:grid; place-items:center; flex:none; width:48px; height:48px; border:1px solid var(--nv-line); border-radius:12px; color:var(--nv-link); background:var(--nv-accent-soft); }
+.nv-empty-copy { padding-top:2px; min-width:0; }
+.nv-empty-copy h4 { color:var(--nv-text); font-size:16px; font-weight:650; line-height:1.8; margin:0 0 6px; }
+.nv-empty-copy p { color:var(--nv-secondary); font-size:12px; line-height:2; margin:0; max-width:580px; }
+.nv-empty-fields { display:flex; gap:12px; margin:24px 0 0; padding:16px 0; border-top:1px solid var(--nv-line); }
+.nv-empty-fields>div { flex:1; min-width:0; display:flex; flex-direction:column; gap:12px; text-align:right; }
+.nv-empty-fields span { color:var(--nv-muted); font-size:10px; }
+.nv-empty-fields b { color:var(--nv-disabled); font:400 16px Arial,sans-serif; }
+.nv-empty-note { display:flex; align-items:center; gap:7px; color:var(--nv-muted); font-size:10px; line-height:1.9; margin-top:20px; }
+.nv-empty-fields+.nv-empty-note { border-top:1px solid var(--nv-line); padding-top:14px; margin-top:0; }
+.nv-empty-note .nv-icon { color:var(--nv-muted); }
+@media(max-width:768px) {
+ .nv-empty { padding:20px; }.nv-empty-body { flex-direction:column; gap:14px; }
+ .nv-empty-symbol { width:40px; height:40px; border-radius:10px; }
+ .nv-empty-copy h4 { font-size:15px; }.nv-empty-copy p { font-size:11px; }
+ .nv-empty-fields { gap:8px; margin-top:20px; }.nv-empty-note { align-items:flex-start; }
+ .nv-empty-note .nv-icon { margin-top:2px; }
 }

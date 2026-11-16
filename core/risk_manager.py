@@ -118,30 +118,59 @@ class RiskManager:
         return equity * fraction
 
     def signal_risk_fraction(self, signal) -> tuple[float, str]:
-        """Increase risk only for a well confirmed rule setup, never for a score alone."""
+        """Scale planned loss, not raw lots. Rule scores are not win probabilities."""
         base = float(self.cfg.get("risk_per_trade", .01))
         quality = self.cfg.get("quality_sizing", {})
+        if not quality.get("enabled"):
+            return base, "BASE"
+        cautious = float(quality.get("cautious_risk_per_trade", base))
+        fallback = (cautious, "CAUTIOUS") if cautious < base else (base, "BASE")
         meta = getattr(signal, "meta", {}) or {}
         selection = meta.get("selection") or {}
         plan = meta.get("trade_plan") or {}
         direction = getattr(getattr(signal, "direction", None), "value", getattr(signal, "direction", None))
-        if (not quality.get("enabled") or direction not in {"BUY", "SELL"}
+        if (direction not in {"BUY", "SELL"}
                 or meta.get("profile", "baseline") != "baseline"
                 or meta.get("score_type") != "uncalibrated_rule_suitability"
                 or selection.get("score_type") != "uncalibrated_rule_suitability"
                 or selection.get("direction") != direction or plan.get("accepted") is not True):
-            return base, "BASE"
+            return fallback
+        # A losing streak never increases size. The existing loss limits still
+        # decide whether any new entry is permitted at all.
+        if self.state is not None and self.state.consecutive_losses > 0:
+            return fallback
+        regime = getattr(signal.market_regime, "value", signal.market_regime)
+        expected = "TRENDING_BULLISH" if direction == "BUY" else "TRENDING_BEARISH"
+        aligned = regime in {expected, "BREAKOUT"}
+        try:
+            for role in ("macro", "trend"):
+                trend = meta["indicators"][role]["trend"]
+                ema20, ema50, ema200, adx, pos, neg = (float(trend[k]) for k in
+                    ("ema_20", "ema_50", "ema_200", "adx", "adx_pos", "adx_neg"))
+                aligned = aligned and all(math.isfinite(v) for v in (ema20, ema50, ema200, adx, pos, neg))
+                aligned = aligned and min(ema20, ema50, ema200) > 0 and float(quality.get("min_trend_adx", 25)) <= adx <= 100 and 0 <= pos <= 100 and 0 <= neg <= 100
+                aligned = aligned and ((ema20 > ema50 > ema200 and pos > neg) if direction == "BUY"
+                    else (ema20 < ema50 < ema200 and neg > pos))
+        except (KeyError, TypeError, ValueError):
+            aligned = False
+        if not aligned:
+            return fallback
         groups = selection.get("confirming_groups") or []
-        if not isinstance(groups, list) or len(set(groups)) < int(quality.get("min_groups", 2)):
-            return base, "BASE"
         try:
             confidence = float(signal.confidence)
             suitability = float(selection["score"])
             net_rr = float(plan["net_rr"])
             signal_rr = float(signal.risk_reward)
         except (TypeError, ValueError, KeyError):
-            return base, "BASE"
+            return fallback
         if (not all(math.isfinite(value) for value in (confidence, suitability, net_rr, signal_rr))
+                or not 0 <= confidence <= 1 or not 0 <= suitability <= 1
+                or confidence < float(quality.get("normal_min_confidence", self.cfg.get("min_confidence", .70)))
+                or suitability < float(quality.get("normal_min_suitability", .65))
+                or min(net_rr, signal_rr) < float(self.cfg.get("min_rr", 1.5))):
+            return fallback
+        if (not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups)
+                or len(set(groups)) < int(quality.get("min_groups", 2))
                 or confidence < float(quality.get("min_confidence", .85))
                 or suitability < float(quality.get("min_suitability", .80))
                 or min(net_rr, signal_rr) < float(quality.get("min_net_rr", 2.0))):

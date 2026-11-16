@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from core.risk_manager import RiskManager
 import pytest
-from utils.types import Direction, Signal
+from utils.types import Direction, Signal, MarketRegime
 
 
 def info(tick_size, tick_value, min_v=.01, max_v=100, step=.01):
@@ -82,11 +82,13 @@ def test_strong_setup_sizing_requires_independent_confirmation(broker, risk_cfg)
         "enabled": True, "risk_per_trade": .009, "min_confidence": .85,
         "min_suitability": .80, "min_groups": 2, "min_net_rr": 2.0}}
     risk = RiskManager(cfg, broker)
-    signal = Signal("EURUSD", Direction.BUY, .90, risk_reward=2.3, meta={
+    signal = Signal("EURUSD", Direction.BUY, .90, risk_reward=2.3, market_regime=MarketRegime.TRENDING_BULLISH, meta={
         "profile": "baseline", "score_type": "uncalibrated_rule_suitability",
         "selection": {"score_type": "uncalibrated_rule_suitability", "direction": "BUY",
             "score": .86, "confirming_groups": ["trend", "momentum"]},
-        "trade_plan": {"accepted": True, "net_rr": 2.3}})
+        "trade_plan": {"accepted": True, "net_rr": 2.3},
+        "indicators": {role: {"trend": {"ema_20":1.12,"ema_50":1.11,"ema_200":1.10,
+            "adx":30,"adx_pos":25,"adx_neg":12}} for role in ("macro","trend")}})
     assert risk.signal_risk_fraction(signal) == (.009, "STRONG_SETUP")
     base_volume = risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info, risk_fraction=.005)
     strong_volume = risk.calculate_volume("EURUSD", 1.1, 1.099, 10000, broker.info, risk_fraction=.009)

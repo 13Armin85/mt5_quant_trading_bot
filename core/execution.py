@@ -393,7 +393,14 @@ class ExecutionEngine:
                 position = live[0]
                 stop = float(position.sl)
                 side = p["direction"]
-                unsafe = (not math.isfinite(stop) or stop <= 0 or (stop < p["sl"] if side == "BUY" else stop > p["sl"]) or float(position.volume) > p.get("requested_volume", p["volume"]) + 1e-8)
+                planned_stop = float(p['sl'])
+                # MT5 can return 1.1025800000000001 for a submitted 1.10258.
+                # Ignore only binary representation noise, never a broker tick
+                # or a materially wider stop. Missing/nonfinite stops still fail.
+                same_stop = math.isfinite(stop) and math.isclose(stop, planned_stop,
+                    rel_tol=0, abs_tol=8 * max(math.ulp(stop), math.ulp(planned_stop)))
+                widened = (stop < planned_stop if side == 'BUY' else stop > planned_stop) and not same_stop
+                unsafe = (not math.isfinite(stop) or stop <= 0 or widened or float(position.volume) > p.get("requested_volume", p["volume"]) + 1e-8)
                 if unsafe and p.get("close_reason"):
                     # The managed exit owns this request, including unknown outcomes.
                     # Keep its state so a later poll cannot submit a duplicate close.
