@@ -18,6 +18,8 @@ def evaluation_id(symbol, candle, strategy, revision):
 def reason_code(reason):
     text = str(reason).lower()
     for code, words in (
+        ("DAILY_PROFIT_TARGET", ("daily_profit_target",)),
+        ("DAILY_LOSS_AMOUNT", ("daily_loss_amount", "remaining daily loss budget")),
         ("KILL_SWITCH", ("kill switch",)),
         ("DUPLICATE", ("duplicate", "existing symbol", "existing paper symbol")),
         ("QUOTE_CHANGE", ("quote changed", "quote change", "repriced order_check", "live quote moved")),

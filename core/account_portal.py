@@ -311,6 +311,8 @@ class DesktopRuntime:
         from monitoring.runtime_view import read_runtime
         from monitoring.profit_loss import mark_open_positions
         view = read_runtime(self.cfg.env.database_url, scope=self.scope(), since=self.started_at)
+        from core.trading_preferences import read_preferences
+        view['trading_preferences'] = read_preferences(self.stopped_flag().parent, self.scope(), view.get('trading_preferences'))
         if not view.get('positions'):
             return view
         from core.symbol_policy import commission_per_lot, trading_policy
@@ -328,6 +330,18 @@ class DesktopRuntime:
             if os.environ.get('NOA_AUTO_LOGIN_FLAG'):
                 Path(os.environ['NOA_AUTO_LOGIN_FLAG']).unlink(missing_ok=True)
             self.compose('stop', 'trader')
+
+    def save_preferences(self, payload):
+        from core.trading_preferences import validate_preferences, write_preferences
+        if not self.account:
+            raise AccountError('ابتدا وارد حساب شوید.')
+        try:
+            preferences = validate_preferences(payload)
+        except (ValueError, TypeError):
+            raise AccountError('تنظیمات معتبر نیست؛ هدف سود، سقف ضرر و حالت معامله را بررسی کنید.') from None
+        with self.operation_lock:
+            write_preferences(self.stopped_flag().parent, self.scope(), preferences)
+        return preferences
 
     def start_trading(self):
         with self.operation_lock:
@@ -388,6 +402,8 @@ class AccountPortal:
             return {"ok": True, **self.session_runtime(session).status()}
         if path == '/view':
             return {'ok': True, 'view': self.session_runtime(session).view()}
+        if path == '/preferences':
+            return {'ok': True, 'preferences': self.session_runtime(session).save_preferences(payload)}
         if path == "/login":
             with self.lock:
                 now = time.monotonic()
@@ -471,12 +487,12 @@ def handler_for(portal):
             if not portal.authorized(self.headers.get("Authorization")) or self.headers.get("Origin"):
                 self.respond(403, {"ok": False, "error": "Forbidden"})
                 return
-            routes = {"/login", "/logout", "/stop", "/start", "/shutdown"} if post else {"/status", "/view"}
+            routes = {"/login", "/logout", "/stop", "/start", "/preferences", "/shutdown"} if post else {"/status", "/view"}
             if self.path not in routes:
                 self.respond(404, {"ok": False, "error": "Not found"})
                 return
             session = self.headers.get("X-Account-Session")
-            if (self.path in {'/logout', '/stop', '/start', '/view'} or (self.path == "/status" and session)) and not portal.session_valid(session):
+            if (self.path in {'/logout', '/stop', '/start', '/view', '/preferences'} or (self.path == "/status" and session)) and not portal.session_valid(session):
                 self.respond(401, {"ok": False, "expired": True})
                 return
             try:

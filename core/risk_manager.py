@@ -34,6 +34,7 @@ class RiskManager:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.mode = getattr(mode, "value", mode)
         self.symbols = symbols or {"symbols": {}}
+        self.daily_guard = None
 
     def policy(self, symbol):
         from core.symbol_policy import trading_policy
@@ -211,6 +212,8 @@ class RiskManager:
         if info is None:
             raise ValueError(f"Missing symbol specification for {symbol}")
         risk = min(self.risk_amount(equity, risk_fraction), equity * min(.01, float(self.cfg.get("max_total_risk", .01))) - open_risk)
+        if self.daily_guard is not None:
+            risk = min(risk, self.daily_guard.remaining(equity) - open_risk)
         if not math.isfinite(open_risk) or open_risk < 0 or risk <= 0:
             return 0.0
         loss_per_lot = self.loss_per_lot(symbol, entry, sl, info, direction)
@@ -276,6 +279,10 @@ class RiskManager:
 
     def can_trade(self, equity: float, open_risk_fraction: float = 0.0) -> tuple[bool, str]:
         self.risk_amount(equity)
+        if self.daily_guard is not None:
+            allowed, reason = self.daily_guard.allowed(equity)
+            if not allowed:
+                return False, reason
         self.roll_state(equity)
         if (self.state.peak_equity - equity) / self.state.peak_equity >= float(self.cfg.get("max_drawdown", .10)):
             return False, "Maximum drawdown reached"

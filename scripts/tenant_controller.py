@@ -303,10 +303,10 @@ WantedBy=multi-user.target
             return self.compose(record,request.get('args'))
         if peer_uid!=self.gateway_uid:
             raise AccountError('دسترسی مجاز نیست.')
-        if operation not in {'login','status','view','stop','start'}:
+        if operation not in {'login','status','view','stop','start','preferences'}:
             raise AccountError('عملیات پشتیبانی نمی‌شود.')
         if operation!='login':
-            return self.forward(self.record(key),operation,request.get('session'))
+            return self.forward(self.record(key),operation,request.get('session'),request.get('payload') if operation=='preferences' else None)
         parsed=AccountLogin.parse(request.get('payload'))
         if parsed.terminal_path or parsed.server!=SERVERS[parsed.account_type] or tenant_key(parsed.login,parsed.server)!=key:
             raise AccountError('هویت حساب یا سرور معتبر نیست.')

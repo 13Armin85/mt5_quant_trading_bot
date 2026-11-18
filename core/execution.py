@@ -141,6 +141,8 @@ class ExecutionEngine:
         if planned > min(self.risk.risk_amount(equity, req.risk_fraction),
                          equity * min(.01, float(self.cfg.get("max_total_risk", .01))) - exposure) + 1e-8:
             raise ValueError("Final risk exceeds budget")
+        if self.risk.daily_guard is not None and planned + exposure > self.risk.daily_guard.remaining(equity) + 1e-8:
+            raise ValueError("Final risk exceeds remaining daily loss budget")
         return info, planned
 
     def execute(self, req):

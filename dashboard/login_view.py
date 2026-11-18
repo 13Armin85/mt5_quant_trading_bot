@@ -87,14 +87,19 @@ def account_header(cfg, status):
     connection = badge("متصل به متاتریدر" if connected else "اتصال قطع است", "good" if connected else "bad")
     st.markdown(f'<div class="nv-topbar"><span class="nv-workspace-label">میزکار معاملات</span><div class="nv-topbar-meta" role="status" aria-live="polite">{connection}{badge(kind,"accent")}</div></div>', unsafe_allow_html=True)
     with st.sidebar:
-        st.markdown(brand(""), unsafe_allow_html=True)
-        st.markdown('<div class="nv-side-caption">حساب معاملاتی شما</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="nv-account-card">{badge(kind,"accent")}<div class="nv-account-id">{e(account.get("login", "—"))}</div><b style="font-size:12px;color:var(--nv-text)">LiteFinance</b><small>{e(account.get("server", ""))}</small></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="nv-card-head"><span>{icon("link",17)} وضعیت حساب</span>{badge("متصل" if connected else "قطع", "good" if connected else "bad")}</div>', unsafe_allow_html=True)
-        st.caption("وضعیت تحلیل‌ها و معاملات هر ۵ ثانیه به‌روز می‌شود.")
-        st.divider()
+        st.markdown(f'<div class="nv-sidebar-brand">{brand("")}<span>پنل حساب معاملاتی</span></div>', unsafe_allow_html=True)
+        st.markdown(f'<section class="nv-sidebar-account" aria-label="حساب معاملاتی">'
+            f'<div class="nv-sidebar-account-top"><span class="nv-sidebar-avatar">{icon("wallet",22)}</span>{badge(kind,"accent")}</div>'
+            f'<span class="nv-sidebar-label">شماره حساب</span><div class="nv-sidebar-login"><bdi>{e(account.get("login", "—"))}</bdi></div>'
+            f'<div class="nv-sidebar-broker"><bdi>LiteFinance</bdi><span>{e(account.get("currency", ""))}</span></div>'
+            f'<bdi class="nv-sidebar-server">{e(account.get("server", ""))}</bdi></section>', unsafe_allow_html=True)
+        requested = status.get('trading_requested', True)
+        st.markdown(f'<div class="nv-sidebar-status" role="status">'
+            f'<div><span>{icon("link",16)}اتصال متاتریدر</span>{badge("متصل" if connected else "قطع", "good" if connected else "bad")}</div>'
+            f'<div><span>{icon("activity",16)}اجازهٔ ترید</span>{badge("روشن" if requested else "متوقف", "good" if requested else "warn")}</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="nv-sidebar-section">کنترل ترید<span>فقط برای همین حساب</span></div>', unsafe_allow_html=True)
         if status.get('trading_requested', True):
-            if st.button('توقف ترید', key='noa_stop_trading', use_container_width=True):
+            if st.button('توقف ترید', key='noa_stop_trading', icon=':material/pause_circle:', use_container_width=True):
                 try:
                     result = portal_client(cfg).request('/stop', payload={}, session=st.session_state['account_session'])
                     if result.get('ok'):
@@ -103,8 +108,7 @@ def account_header(cfg, status):
                 except PortalUnavailable:
                     st.error('توقف ترید تأیید نشد؛ ارتباط با سرویس در دسترس نیست.')
         else:
-            st.info('ترید این حساب با درخواست شما متوقف است.')
-            if st.button('شروع ترید', key='noa_start_trading', type='primary', use_container_width=True):
+            if st.button('شروع ترید', key='noa_start_trading', icon=':material/play_circle:', type='primary', use_container_width=True):
                 try:
                     result = portal_client(cfg).request('/start', payload={}, session=st.session_state['account_session'])
                     if result.get('ok'):
@@ -112,8 +116,9 @@ def account_header(cfg, status):
                     st.error(result.get('error', 'شروع ترید تأیید نشد.'))
                 except PortalUnavailable:
                     st.error('شروع ترید تأیید نشد؛ ارتباط با سرویس در دسترس نیست.')
-        st.caption('توقف ترید، موتور این حساب را متوقف می‌کند؛ پوزیشن‌های باز بسته نمی‌شوند و مدیریت خودکارشان نیز متوقف می‌شود.')
-        if st.button("خروج از پنل", use_container_width=True):
+        st.markdown(f'<div class="nv-sidebar-notice">{icon("shield",16)}<p>توقف موتور، مدیریت خودکار را هم متوقف می‌کند؛ پوزیشن‌های باز بسته نمی‌شوند.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="nv-sidebar-session"><span>نشست کاربری</span><small>دسترسی امن به پنل شما</small></div>', unsafe_allow_html=True)
+        if st.button("خروج از پنل", key="noa_logout", icon=':material/logout:', use_container_width=True):
             try:
                 with st.spinner("در حال پایان دادن به نشست نواتک…"):
                     result = portal_client(cfg).request("/logout", payload={}, session=st.session_state["account_session"])
@@ -123,8 +128,9 @@ def account_header(cfg, status):
                 st.error(result.get("error", "خروج کامل نشد؛ دوباره تلاش کنید."))
             except PortalUnavailable:
                 st.error("ارتباط با سرویس اتصال در دسترس نیست. وضعیت برنامه را بررسی کنید.")
-        st.caption('خروج از پنل و بستن مرورگر، اتصال حساب و ترید را متوقف نمی‌کند.')
+        st.markdown(f'<div class="nv-sidebar-persistent">{icon("clock",15)}<span>با خروج از پنل، ترید ادامه دارد.</span></div>', unsafe_allow_html=True)
         with st.expander("راهنمای کوتاه نواتک"):
             st.write("دمو، حساب آزمایشی بروکر است. برچسب LIVE یعنی سفارش‌ها از طریق متاتریدر اجرا می‌شوند؛ نوع حساب را در کارت بالا ببینید.")
             st.write("برای تعویض حساب، ابتدا خارج شوید و سپس اطلاعات حساب بعدی را وارد کنید.")
             st.write('برای توقف ترید باید وارد همین حساب شوید و دکمهٔ «توقف ترید» را بزنید. خروج یا پایان نشست مرورگر، موتور را متوقف نمی‌کند.')
+        st.markdown('<div class="nv-sidebar-footer"><span>NOA</span>میزکار اختصاصی شما</div>', unsafe_allow_html=True)

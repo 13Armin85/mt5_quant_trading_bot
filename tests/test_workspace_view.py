@@ -43,6 +43,6 @@ def test_full_workspace_renders_analyses_news_positions_and_history(monkeypatch)
     monkeypatch.setattr(monitoring.runtime_view,"read_runtime",lambda *args,**kwargs:view)
     app=AppTest.from_file(str(Path(__file__).parents[1]/"dashboard"/"app.py")).run(timeout=30)
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات"]
+    assert [tab.label for tab in app.tabs] == ["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات","تنظیمات"]
     assert app.selectbox(key="noatech_analysis").value.startswith("BTCUSD")
     assert len(app.dataframe) >= 5

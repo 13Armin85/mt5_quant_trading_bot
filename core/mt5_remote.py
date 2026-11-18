@@ -18,6 +18,7 @@ class RemoteMT5Client:
         self.owner = str(uuid.uuid4())
         self.connected = False
         self.account_identity = None
+        self._timeframes = {}
         self.http = httpx.Client(
             base_url=env.mt5_bridge_url.rstrip("/"), timeout=90, trust_env=False,
             headers={"Authorization": "Bearer " + Path(env.mt5_bridge_token_file).read_text().strip()},
@@ -83,6 +84,16 @@ class RemoteMT5Client:
         if not self.trading:
             raise MT5Error("Read-only bridge client cannot submit orders")
         return self._rpc("order_send", request)
+
+    def timeframe(self, name):
+        # SDK enum values are immutable, unlike prices/account state. Resolve
+        # each supported name once instead of round-tripping for every bar read.
+        if name not in self._timeframes:
+            value = self._rpc("timeframe", name)
+            if type(value) is not int or value <= 0:
+                raise MT5Error("Invalid broker timeframe constant")
+            self._timeframes[name] = value
+        return self._timeframes[name]
 
     def __getattr__(self, method):
         if method in READ_METHODS:

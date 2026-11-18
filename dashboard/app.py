@@ -13,7 +13,7 @@ from dashboard.workspace import render_workspace
 from monitoring.runtime_view import read_runtime
 
 
-st.set_page_config(page_title="نواتک | میزکار معاملات", page_icon=str(ASSETS / "noatech-icon.png"), layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="نواتک | میزکار معاملات", page_icon=str(ASSETS / "noatech-icon.png"), layout="wide", initial_sidebar_state="locked")
 apply_theme()
 cfg = load_config()
 account_status = authenticate(cfg)

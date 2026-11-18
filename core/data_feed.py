@@ -22,6 +22,7 @@ class DataFeed:
         self._last_quote_log = {}
         self.clock=clock or (lambda:datetime.now(timezone.utc))
         self._spread_samples={}
+        self._bars_cache = {}
 
     def _quote_schedule(self, symbol):
         for logical,meta in self.symbol_config.get("symbols",{}).items():
@@ -75,12 +76,29 @@ class DataFeed:
 
     def bars(self, symbol: str, timeframe: str, count: int = 700, require_fresh: bool = True, allow_session_gaps=False) -> pd.DataFrame:
         tf = self.client.timeframe(timeframe)
-        rates = self.client.copy_rates_from_pos(symbol, tf, 1, count)
-        if rates is None or len(rates) == 0:
-            return pd.DataFrame()
-        df = pd.DataFrame(rates)
-        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        self.validate_bars(df, count)
+        key = (symbol, timeframe, count)
+        cached = self._bars_cache.get(key)
+        df = None
+        # Check the latest CLOSED broker bar on every call. Reuse validated
+        # history only while its complete last-row signature still matches.
+        # Refresh the full window at least every 30s to pick up older revisions.
+        if cached is not None and time.monotonic() - cached[0] < 30:
+            latest = self.client.copy_rates_from_pos(symbol, tf, 1, 1)
+            if latest is None or len(latest) == 0:
+                return pd.DataFrame()
+            probe = pd.DataFrame(latest)
+            signature = tuple(sorted(probe.iloc[-1].to_dict().items()))
+            if len(probe) == 1 and signature == cached[1]:
+                df = cached[2].copy(deep=True)
+        if df is None:
+            rates = self.client.copy_rates_from_pos(symbol, tf, 1, count)
+            if rates is None or len(rates) == 0:
+                return pd.DataFrame()
+            df = pd.DataFrame(rates)
+            signature = tuple(sorted(df.iloc[-1].to_dict().items()))
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+            self.validate_bars(df, count)
+            self._bars_cache[key] = (time.monotonic(), signature, df.copy(deep=True))
         seconds = TIMEFRAME_SECONDS[timeframe]
         now=self.clock()
         if now.tzinfo is None:

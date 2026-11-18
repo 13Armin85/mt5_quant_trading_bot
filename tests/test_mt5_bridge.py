@@ -141,6 +141,22 @@ def make_client(tmp_path, transport, trading=False):
     return RemoteMT5Client(env, "Europe/Helsinki", trading, transport)
 
 
+def test_remote_timeframe_constants_are_resolved_once_without_caching_prices(tmp_path):
+    calls=[]
+    def transport(request):
+        data=json.loads(request.content)
+        calls.append((data['method'],data['args']))
+        return httpx.Response(200,json={'ok':True,'result':1 if data['args']==['M1'] else 5})
+    client=make_client(tmp_path,httpx.MockTransport(transport))
+    try:
+        assert client.timeframe('M1')==client.timeframe('M1')==1
+        assert client.timeframe('M5')==client.timeframe('M5')==5
+        assert [method for method,args in calls]==['timeframe','timeframe']
+        client.symbol_info_tick('EURUSD');client.symbol_info_tick('EURUSD')
+        assert [method for method,args in calls[-2:]]==['symbol_info_tick','symbol_info_tick']
+    finally:client.http.close()
+
+
 def test_remote_client_calls_normalized_bridge_without_local_sdk(service, broker, tmp_path, monkeypatch):
     monkeypatch.setattr("core.mt5_client.mt5", None)
     normalized = 1792774800

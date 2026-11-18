@@ -49,6 +49,28 @@ def test_runtime_paper_entry_exit_and_no_broker_order(paper_runtime,broker):
     assert engine.repository.get_state("paper-account:paper_pnl") < 0
 
 
+def test_daily_target_requests_exit_without_waiting_for_chart(paper_runtime):
+    engine = paper_runtime
+    engine.daily_status = {"halt":"DAILY_PROFIT_TARGET"}
+    decision = engine.position_decision("EURUSD", "BUY", 1.1, 1.11, 1.09, {}, {})
+    assert decision.close and decision.reason == "DAILY_PROFIT_TARGET"
+
+
+def test_saved_activity_is_applied_to_engine_and_execution_without_restart(paper_runtime):
+    engine = paper_runtime
+    assert engine.cfg.get("strategy.timeframes.entry") == "M1"
+    from core.trading_preferences import DEFAULTS
+    engine.repository.set_state(engine.execution.scope + ':preferences', {**DEFAULTS,'activity':'normal','daily_enabled':True})
+    engine.refresh_preferences()
+    assert engine.cfg.get('strategy.timeframes.entry') == 'M5'
+    assert engine.execution.cfg['max_trades_per_day'] == engine.base_cfg.get('trading.max_trades_per_day')
+    assert engine.daily_guard.policy['daily_enabled']
+    assert engine.risk.daily_guard is engine.daily_guard
+    assert engine.risk.symbols is engine.cfg.symbols
+    assert engine.resolver.symbol_config is engine.cfg.symbols
+    assert engine.correlation.symbols is engine.cfg.symbols
+
+
 @pytest.mark.parametrize("confirmed", [True, False])
 def test_strong_setup_risk_reaches_execution_request(paper_runtime, broker, monkeypatch, confirmed):
     engine = paper_runtime
@@ -436,6 +458,7 @@ def test_live_management_requires_live_permission(paper_runtime, broker):
 @pytest.mark.parametrize("order",[["EURUSD","GBPUSD"],["GBPUSD","EURUSD"]])
 def test_cycle_ranks_all_symbols_before_entry_regardless_of_scan_order(paper_runtime,broker,monkeypatch,order):
     engine=paper_runtime
+    monkeypatch.setattr(engine,'entry_variants',lambda profile:(None,))
     engine.cfg.symbols["symbols"]["GBPUSD"]={"broker_symbol":"GBPUSD","currencies":["GBP","USD"]}
     calls=[]
     def generate(symbol,*args):
@@ -452,6 +475,66 @@ def test_cycle_ranks_all_symbols_before_entry_regardless_of_scan_order(paper_run
     assert calls[2]=="submit:GBPUSD"
     assert engine.execution.paper_positions()[0]["symbol"]=="GBPUSD"
     assert not broker.sent
+
+
+def test_active_cycle_evaluates_m5_opportunity_when_m1_has_no_setup(paper_runtime,broker,monkeypatch):
+    engine=paper_runtime
+    calls=[]
+    frame_timeframes=[]
+    original_frames=engine.load_frames
+    def frames(symbol,cfg=None):
+        frame_timeframes.append((cfg or engine.cfg).get('strategy.timeframes.entry'))
+        return original_frames(symbol,cfg)
+    monkeypatch.setattr(engine,'load_frames',frames)
+    def fast(symbol,*args):
+        calls.append('M1')
+        return Signal(symbol,Direction.HOLD,.3,timeframe='M1',signal_id='m1-hold')
+    def wider(symbol,*args):
+        calls.append('M5')
+        return Signal(symbol,Direction.BUY,.8,1.1,1.099,1.103,timeframe='M5',signal_id='m5-valid')
+    monkeypatch.setattr(engine.signal_engine,'generate',fast)
+    monkeypatch.setattr(engine.entry_engines['M5'],'generate',wider)
+    engine.run_cycle(['EURUSD'])
+    assert calls==['M1','M5']
+    assert frame_timeframes==['M1','M5']
+    assert len(engine.execution.paper_positions())==1 and not broker.sent
+    assert engine.repository.get_state('analysis:EURUSD:entry:M1')['timeframe']=='M1'
+    assert engine.repository.get_state('analysis:EURUSD:entry:M5')['timeframe']=='M5'
+    assert engine.repository.get_state('heartbeat')['entry_timeframes']==['M1','M5']
+
+
+def test_m5_schedule_does_not_delay_m1_or_skip_a_new_m5_candle(paper_runtime,monkeypatch):
+    engine=paper_runtime
+    now=[0.]
+    wall=[datetime(2026,11,18,10,0,tzinfo=timezone.utc)]
+    monkeypatch.setattr('core.trading_engine.time.monotonic',lambda:now[0])
+    engine.risk.clock=lambda:wall[0]
+    assert engine.variant_scan_due('EURUSD','M5')
+    now[0]=10
+    assert not engine.variant_scan_due('EURUSD','M5')
+    assert engine.variant_scan_due('EURUSD','M1')
+    assert engine.variant_scan_due('GBPUSD','M5')
+    now[0]=31
+    assert engine.variant_scan_due('EURUSD','M5')
+    wall[0]+=timedelta(minutes=5)
+    assert engine.variant_scan_due('EURUSD','M5')
+
+
+def test_secondary_scan_is_scheduled_once_for_the_whole_cycle(paper_runtime,monkeypatch):
+    engine=paper_runtime
+    schedule=[]
+    evaluations=[]
+    def due(symbol,entry):
+        schedule.append((symbol,entry))
+        return True
+    def process(symbol,**kwargs):
+        evaluations.append((symbol,kwargs['entry_timeframe']))
+        return None
+    monkeypatch.setattr(engine,'variant_scan_due',due)
+    monkeypatch.setattr(engine,'process_symbol',process)
+    engine.run_cycle(['EURUSD','GBPUSD'])
+    assert schedule==[('__portfolio__','M5')]
+    assert evaluations==[('EURUSD','M1'),('EURUSD','M5'),('GBPUSD','M1'),('GBPUSD','M5')]
 
 
 def test_repeated_polling_does_not_inflate_execution_or_funnel_records(paper_runtime,broker):

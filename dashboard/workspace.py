@@ -36,6 +36,8 @@ STRATEGIES = {
     "keltner_breakout": "شکست کلتنر", "vwap_reclaim": "بازگشت VWAP", "baseline": "روش پایه",
 }
 DECISIONS = {
+    "DAILY_PROFIT_TARGET": ("هدف سود امروز لمس شده", "ورود جدید تا روز معاملاتی بعد متوقف است و بستن موقعیت‌های ربات پیگیری می‌شود."),
+    "DAILY_LOSS_AMOUNT": ("سقف ضرر روزانه لمس شده", "ورود جدید تا روز معاملاتی بعد متوقف است و بستن موقعیت‌های ربات پیگیری می‌شود."),
     "MARKET_CLOSED": ("در انتظار بازگشایی بازار", "پس از بازگشایی بازار و دریافت قیمت تازه، بررسی شرایط ورود ادامه پیدا می‌کند."),
     "CLOCK_MISMATCH": ("ساعت قیمت نیاز به بررسی دارد", "زمان سیستم و زمان قیمت متاتریدر هم‌خوان نیست؛ تا رفع اختلاف، ورود جدید انجام نمی‌شود."),
     "DATA_STALE": ("در انتظار قیمت تازه", "برای ارزیابی قابل اتکا، ربات به قیمت و دادهٔ تازه نیاز دارد."),
@@ -166,10 +168,12 @@ def decision_summary(heartbeat):
 def analysis_panel(cfg, analyses):
     section("تحلیل نمادها", "جزئیات هر نماد، نتیجهٔ استراتژی‌ها و داده‌های فنی را کنار هم ببینید.", "SYMBOL INSIGHTS")
     analyses = [a for a in analyses if isinstance(a, dict) and a.get("symbol")]
+    variants = {(a['symbol'], a.get('profile','baseline')) for a in analyses if a.get('entry_variant')}
+    analyses = [a for a in analyses if a.get('entry_variant') or (a['symbol'], a.get('profile','baseline')) not in variants]
     if not analyses:
         empty_state("اولین تحلیل در راه است", "پس از آماده شدن قیمت و کندل‌های کامل، تحلیل نمادها در این بخش قرار می‌گیرد.", "layers")
         return
-    choices = {f"{a['symbol']} · {translated(a.get('profile','baseline'))}": a for a in analyses}
+    choices = {f"{a['symbol']} · {translated(a.get('profile','baseline'))}" + (f" · {a['entry_variant']}" if a.get('entry_variant') else ""): a for a in analyses}
     selected = st.selectbox("انتخاب نماد و نمای تحلیل", list(choices), key="noatech_analysis")
     analysis = choices[selected]
     direction = analysis.get("direction", "HOLD")
@@ -327,6 +331,10 @@ def render_workspace(cfg, status, view):
     heartbeat = view.get("heartbeat") or {}
     account = status.get("account") or {}
     age = age_seconds(heartbeat,now)
+    daily = heartbeat.get("daily_guard") or {}
+    if daily.get("halt") in DECISIONS:
+        title, detail = DECISIONS[daily["halt"]]
+        st.info(title + "؛ " + detail)
     if status.get('trading_requested') is False:
         st.info('ترید این حساب با درخواست شما متوقف است. خروج و ورود دوباره آن را فعال نمی‌کند؛ برای ادامه از «شروع ترید» استفاده کنید. داده‌های قبلی ممکن است قدیمی باشند.')
     st.markdown(f'<div class="nv-page-heading"><div><span class="nv-eyebrow">NOATECH / WORKSPACE</span><h1>نمای کلی میزکار</h1><p>تصویری روشن از حساب، بازار و تصمیم‌های ربات.</p></div><div class="nv-clock">{fa(now.astimezone(TEHRAN).strftime("%H:%M"))}<span>به وقت تهران · به‌روزرسانی خودکار</span></div></div>',unsafe_allow_html=True)
@@ -335,7 +343,7 @@ def render_workspace(cfg, status, view):
     decision_summary(heartbeat)
     render_metrics(heartbeat,view.get("positions") or [],account,age)
     render_profit_loss(view, account.get("currency", ""))
-    overview_tab,analysis_tab,news_tab,trades_tab = st.tabs(["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات"])
+    overview_tab,analysis_tab,news_tab,trades_tab,settings_tab = st.tabs(["نمای کلی","تحلیل نمادها","اخبار بازار","معاملات","تنظیمات"])
     with overview_tab:
         overview(cfg,heartbeat,view,account)
     with analysis_tab:
@@ -344,6 +352,9 @@ def render_workspace(cfg, status, view):
         news_panel(heartbeat.get("news") or {})
     with trades_tab:
         trades_panel(view, account.get("currency", ""))
+    with settings_tab:
+        from dashboard.trading_settings import settings_panel
+        settings_panel(cfg, status, view)
     with st.expander("جزئیات فنی وضعیت سیستم"):
         st.json(heartbeat)
     st.markdown('<div class="nv-footer"><span>نواتک · تحلیل بازار، پایش معاملات، کنترل ریسک.</span><span>NOATECH / YOUR TRADING WORKSPACE</span></div>',unsafe_allow_html=True)

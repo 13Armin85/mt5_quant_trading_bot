@@ -75,6 +75,10 @@ class TenantRuntime:
     def stop_trading(self):
         self.call('stop')
 
+    def save_preferences(self, payload):
+        from core.trading_preferences import validate_preferences
+        return self.call('preferences', payload=validate_preferences(payload))['preferences']
+
     def start_trading(self):
         self.call('start')
 

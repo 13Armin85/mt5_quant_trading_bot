@@ -33,6 +33,10 @@ class Runtime:
     def view(self):return {'private_account':self.account['login']}
     def stop_trading(self):self.stops+=1;self.running=False
     def start_trading(self):self.running=True
+    def save_preferences(self,payload):
+        from core.trading_preferences import validate_preferences
+        self.preferences=validate_preferences(payload)
+        return self.preferences
 
 
 @pytest.fixture
@@ -60,6 +64,19 @@ def test_simultaneous_users_cannot_read_or_stop_each_others_account(multiuser):
     assert runtimes[111].stops==1 and runtimes[222].stops==0
     assert client.request('/start',payload={},session=a)['ok']
     assert runtimes[111].running
+
+
+def test_settings_http_route_requires_session_and_changes_only_its_account(multiuser):
+    from core.trading_preferences import DEFAULTS
+    client,portal,runtimes=multiuser
+    assert client.request('/preferences',payload=DEFAULTS).get('expired')
+    a=client.request('/login',payload=credentials(111))['session']
+    b=client.request('/login',payload=credentials(222))['session']
+    assert client.request('/preferences',session=a,payload={**DEFAULTS,'daily_enabled':True})['ok']
+    assert runtimes[111].preferences['daily_enabled']
+    assert not hasattr(runtimes[222],'preferences')
+    assert not client.request('/preferences',session=b,payload={**DEFAULTS,'scope':'other'})['ok']
+    assert runtimes[111].running and runtimes[222].running
 
 
 def test_logout_expiry_and_failed_login_never_stop_trading(multiuser,monkeypatch):

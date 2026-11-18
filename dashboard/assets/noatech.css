@@ -123,12 +123,55 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible,[
 .nv-footer span:last-child { font:9px Arial,sans-serif; letter-spacing:1px; direction:ltr; }
 .st-key-noa_market_card { background:var(--nv-panel); border:1px solid var(--nv-line); border-radius:12px; padding:20px; }
 /* Account rail, with the native Streamlit drawer controls. */
-[data-testid="stSidebar"] { background:var(--nv-panel-soft); border-left:1px solid var(--nv-line); border-right:0; }
-[data-testid="stSidebarContent"] { padding:20px 16px; }
+[data-testid="stSidebar"] { background:var(--nv-panel); border-left:1px solid var(--nv-line); border-right:0; direction:rtl; }
+[data-testid="stSidebar"][data-collapsed="true"] { border:0; visibility:hidden; pointer-events:none; }
+[data-testid="stSidebarContent"] { padding:0 20px 20px; overflow-x:hidden; }
 [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding:0; }
-[data-testid="stSidebar"] .nv-brand { margin:8px 0 24px; }
+[data-testid="stSidebarHeader"] { position:sticky; top:0; z-index:2; background:var(--nv-panel); min-height:44px; padding:6px 0; justify-content:flex-end; }
+[data-testid="stSidebarHeader"] [data-testid="stLogoSpacer"] { display:none; }
+[data-testid="stSidebarCollapseButton"] { visibility:visible!important; opacity:1!important; }
+[data-testid="stSidebarCollapseButton"] button { width:34px; min-height:34px; border:1px solid var(--nv-line); border-radius:8px; color:var(--nv-secondary); }
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"] { transform:rotate(180deg); }
+[data-testid="stExpandSidebarButton"] { position:fixed; right:12px; left:auto; top:4px; min-height:40px; min-width:122px; width:auto; padding:8px 12px; border:1px solid var(--nv-line); border-radius:8px; background:var(--nv-panel); color:var(--nv-text); display:flex!important; visibility:visible!important; opacity:1!important; gap:8px; z-index:1000003; }
+[data-testid="stExpandSidebarButton"]::after { content:"پنل حساب"; font-family:var(--nv-font); font-size:12px; white-space:nowrap; }
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"] { transform:rotate(180deg); }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap:12px; }
+[data-testid="stSidebar"] .nv-brand { margin:0; justify-content:flex-start; }
 [data-testid="stSidebar"] .nv-brand small { display:none; }
-[data-testid="stSidebar"] [data-testid="stButton"] button { width:100%; direction:rtl; }
+[data-testid="stSidebar"] [data-testid="stButton"] button { width:100%; direction:rtl; min-height:46px; border-radius:10px; font-size:12px; font-weight:600; }
+[data-testid="stSidebar"] [data-testid="stButton"] button p { font-size:12px; }
+.nv-sidebar-brand { padding:6px 0 20px; border-bottom:1px solid var(--nv-line); }
+.nv-sidebar-brand>span { display:block; color:var(--nv-muted); font-size:10px; margin-top:9px; }
+.nv-sidebar-account { border:1px solid var(--nv-line); border-radius:14px; padding:18px; background:var(--nv-panel-soft); margin:4px 0; }
+.nv-sidebar-account-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+.nv-sidebar-avatar { display:grid; place-items:center; width:40px; height:40px; border:1px solid var(--nv-line); border-radius:12px; color:var(--nv-link); background:var(--nv-panel); }
+.nv-sidebar-account .nv-badge { padding:5px 9px; background:var(--nv-accent-soft); border-radius:6px; font-size:10px; }
+.nv-sidebar-label { color:var(--nv-muted); font-size:10px; }
+.nv-sidebar-login { margin:3px 0 16px; color:var(--nv-text); font:650 25px var(--nv-font); letter-spacing:.5px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.nv-sidebar-broker { display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--nv-text); }
+.nv-sidebar-broker>span { color:var(--nv-muted); font-size:10px; }
+.nv-sidebar-server { display:block; margin-top:7px; color:var(--nv-secondary); font-size:10px; line-height:1.7; direction:ltr; text-align:right; overflow-wrap:anywhere; }
+.nv-sidebar-status { padding:4px 0 12px; border-bottom:1px solid var(--nv-line); }
+.nv-sidebar-status>div { display:flex; justify-content:space-between; align-items:center; min-height:35px; gap:8px; }
+.nv-sidebar-status>div>span:first-child { display:flex; align-items:center; gap:8px; color:var(--nv-secondary); font-size:11px; }
+.nv-sidebar-status svg { color:var(--nv-muted); flex-shrink:0; }
+.nv-sidebar-status .nv-badge { display:flex; align-items:center; gap:6px; font-size:10px; }
+.nv-sidebar-section { display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:650; color:var(--nv-text); padding-top:7px; }
+.nv-sidebar-section>span { color:var(--nv-muted); font-size:9px; font-weight:400; }
+.st-key-noa_stop_trading button[kind] { border:1px solid var(--nv-danger); background:var(--nv-bad-soft); color:var(--nv-danger); }
+.st-key-noa_stop_trading button[kind]:hover { border-color:var(--nv-danger); background:var(--nv-bad-soft); color:var(--nv-danger); filter:brightness(.95); }
+.nv-sidebar-notice { display:flex; gap:8px; align-items:flex-start; color:var(--nv-muted); padding:0 2px 4px; }
+.nv-sidebar-notice svg { margin-top:3px; flex-shrink:0; }
+.nv-sidebar-notice p { margin:0; font-size:10px; line-height:1.9; }
+.nv-sidebar-session { border-top:1px solid var(--nv-line); padding:18px 0 0; display:flex; justify-content:space-between; align-items:center; gap:8px; color:var(--nv-text); font-size:12px; font-weight:650; }
+.nv-sidebar-session small { color:var(--nv-muted); font-size:9px; font-weight:400; }
+.st-key-noa_logout button[kind] { background:transparent; border-color:var(--nv-line); color:var(--nv-secondary); }
+.nv-sidebar-persistent { display:flex; align-items:center; gap:7px; color:var(--nv-muted); font-size:10px; }
+[data-testid="stSidebar"] [data-testid="stExpander"] details { background:transparent; border:0; border-radius:0; }
+[data-testid="stSidebar"] [data-testid="stExpander"] summary { padding:6px 0; min-height:36px; color:var(--nv-secondary); }
+[data-testid="stSidebar"] [data-testid="stExpander"] p { font-size:10px; line-height:1.9; }
+.nv-sidebar-footer { border-top:1px solid var(--nv-line); padding-top:14px; margin-top:4px; display:flex; align-items:center; justify-content:space-between; color:var(--nv-muted); font-size:9px; }
+.nv-sidebar-footer>span { font:600 11px Arial,sans-serif; letter-spacing:2px; color:var(--nv-secondary); }
 .nv-side-caption { direction:rtl; text-align:right; color:var(--nv-muted); font-size:10px; font-weight:500; margin:24px 0 12px; }
 .nv-account-card { direction:rtl; border:1px solid var(--nv-line); background:var(--nv-panel); border-radius:12px; padding:16px; margin:12px 0 20px; }
 .nv-account-id { direction:ltr; text-align:right; color:var(--nv-text); font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; margin:12px 0 8px; }
@@ -165,6 +208,7 @@ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1180px
 .nv-secret-note svg { color:var(--nv-link); }
 @media(min-width:769px) {
   [data-testid="stSidebar"] { order:2; }
+  [data-testid="stSidebar"][data-collapsed="false"] { width:340px!important; min-width:340px!important; max-width:340px; }
   [data-testid="stMain"] { order:1; }
 }
 @media(max-width:1100px) {
@@ -178,7 +222,7 @@ body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { max-width:1180px
   [data-testid="stMainBlockContainer"],body:has(.nv-login-page) [data-testid="stMainBlockContainer"] { padding:4rem 1rem 1.5rem; }
   [data-testid="stHorizontalBlock"] { flex-direction:column; align-items:stretch; }
   [data-testid="stColumn"] { width:100%!important; flex:1 1 100%!important; }
-  [data-testid="stSidebar"] { position:fixed!important; right:0!important; left:auto!important; top:0; bottom:0; height:100dvh!important; max-width:min(320px,88vw); z-index:1000002; }
+  [data-testid="stSidebar"] { position:fixed!important; right:0!important; left:auto!important; top:0; bottom:0; height:100dvh!important; width:min(340px,88vw)!important; max-width:min(340px,88vw); z-index:1000002; }
   [data-testid="stSidebar"][data-collapsed="false"] { transform:none!important; }
   [data-testid="stSidebar"][data-collapsed="true"] { transform:translateX(100%)!important; visibility:hidden; pointer-events:none; }
   [data-testid="stExpandSidebarButton"] { position:fixed; right:12px; left:auto; top:4px; }

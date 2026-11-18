@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from threading import Event
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,54 @@ class TradingEngine:
         stored = repository.get_state(execution.scope + ":risk")
         if stored:
             self.risk.state = RiskState(**stored)
+        from core.trading_preferences import DailyGuard
+        self.base_cfg = app_cfg.model_copy(deep=True)
+        self.activity = None
+        self.daily_guard = DailyGuard(repository, execution.scope, self.risk.clock)
+        self.risk.daily_guard = self.daily_guard
+        self.daily_status = {}
+        self.refresh_preferences()
+
+    def refresh_preferences(self):
+        from core.trading_preferences import activity_config, read_preferences
+        preferences = read_preferences(self.execution.kill_switch_path.parent, self.execution.scope,
+            self.repository.get_state(self.execution.scope + ":preferences"))
+        self.daily_guard.policy = preferences
+        if preferences["activity"] != self.activity:
+            self.cfg = activity_config(self.base_cfg, preferences["activity"])
+            self.signal_engine = SignalEngine(self.cfg)
+            self.entry_configs = {}
+            self.entry_engines = {}
+            self._variant_scans = {}
+            if preferences['activity'] == 'active' and not self.profile_configs:
+                wider = self.cfg.model_copy(deep=True)
+                wider.settings['strategy']['timeframes']['entry'] = 'M5'
+                self.entry_configs['M5'] = wider
+                self.entry_engines['M5'] = SignalEngine(wider)
+            self.revision = config_revision(self.cfg)
+            self.risk.cfg = self.cfg.get("trading")
+            self.risk.symbols = self.cfg.symbols
+            self.resolver.symbol_config = self.cfg.symbols
+            self.correlation.symbols = self.cfg.symbols
+            self.execution.cfg = self.cfg.get("trading")
+            self.activity = preferences["activity"]
+        return preferences
+
+    def entry_variants(self, profile):
+        return ('M1', 'M5') if self.activity == 'active' and profile == 'baseline' and not self.profile_configs else (None,)
+
+    def variant_scan_due(self, symbol, entry):
+        if entry != 'M5':
+            return True
+        now = time.monotonic()
+        candle = int(self.risk.clock().timestamp()) // 300
+        previous = self._variant_scans.get(symbol)
+        if previous and previous[0] == candle and now < previous[1]:
+            return False
+        # A 5-minute setup need not repeat its full analysis every fast cycle.
+        # Recheck prices/plans every 30s, immediately on the next M5 boundary.
+        self._variant_scans[symbol] = (candle, now + 30)
+        return True
 
     def persist_risk(self):
         if self.risk.state:
@@ -95,11 +144,14 @@ class TradingEngine:
             logger.info("Engine stopped; broker positions retain their SL/TP")
 
     def run_cycle(self, symbols):
+        cycle_started = time.monotonic()
+        preferences = self.refresh_preferences()
         account = self.client.account_info()
         if account is None:
             raise ValueError("Account unavailable")
         equity = float(account.equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()
         self.risk.roll_state(equity)
+        self.daily_status = self.daily_guard.update(equity)
         attempts = self.repository.attempts(self.execution.scope)
         today = self.risk.clock().date().isoformat()
         self.risk.state.trades_today = max(self.risk.state.trades_today, sum(json.loads(a.payload)["created"][:10] == today and a.status != "REJECTED" for a in attempts))
@@ -120,20 +172,29 @@ class TradingEngine:
         candidates = []
         profile_order = ([name for name in self.cfg.get("profiles.priority", ["intraday", "scalping"])
             if name in self.profile_configs] if self.profile_configs else ["baseline"])
+        # Schedule the secondary scan as one portfolio-wide wave. Per-symbol
+        # timers spread M5 work across every cycle and slow the fast M1 path.
+        m5_due = self.activity == 'active' and not self.profile_configs and self.variant_scan_due('__portfolio__', 'M5')
         for symbol in sorted(symbols):
             if not self.running:
                 break
             for profile in profile_order:
-                try:
-                    signal = self.process_symbol(symbol, submit=False, profile_name=profile)
-                    if signal is not None and signal.direction != Direction.HOLD:
-                        candidates.append((symbol, signal))
-                except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
-                    logger.warning("{} profile={} data/entry rejected: {}", symbol, profile, exc)
-                    self.record_unavailable(self.resolved.get(symbol,symbol),str(exc),reason_code(exc),profile=profile)
+                for entry in self.entry_variants(profile):
+                    if not self.running:
+                        break
+                    if entry == 'M5' and not m5_due:
+                        continue
+                    try:
+                        signal = self.process_symbol(symbol, submit=False, profile_name=profile, entry_timeframe=entry)
+                        if signal is not None and signal.direction != Direction.HOLD:
+                            candidates.append((symbol, signal))
+                    except (ValueError, MT5Error, TimeoutError, ConnectionError) as exc:
+                        logger.warning("{} profile={} data/entry rejected: {}", symbol, profile, exc)
+                        self.record_unavailable(self.resolved.get(symbol,symbol),str(exc),reason_code(exc),profile=profile,entry_variant=entry)
         # Profile capacity/priority is an operational allocation, not a comparison
         # of uncalibrated score or expected return across timeframes.
         candidates.sort(key=lambda item: (profile_order.index(item[1].meta.get("profile", "baseline")),
+            1 if item[1].meta.get('entry_variant') == 'M5' else 0,
             -item[1].confidence, -(item[1].risk_reward or 0), item[1].symbol, item[1].strategy))
         for logical, signal in candidates:
             if not self.running:
@@ -150,6 +211,8 @@ class TradingEngine:
         clocks={"utc":now.isoformat(),"server":now.astimezone(getattr(self.client,"market_timezone",timezone.utc)).isoformat(),
                 "tehran":now.astimezone(ZoneInfo("Asia/Tehran")).isoformat()}
         status = {"time": now.isoformat(), "connected": self.client.health_check(),"clocks":clocks,
+                  "cycle_seconds": round(time.monotonic() - cycle_started, 3),
+                  "entry_timeframes": list(self.entry_variants('baseline')),
                   "mode": self.execution.mode.value, "symbols": self.resolved,
                   "scope":self.execution.scope,
                   "equity": float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity(),
@@ -158,6 +221,8 @@ class TradingEngine:
                   "news":self.news_filter.status(),
                   "position_management": self.repository.get_state(self.execution.scope + ":position_management"),
                   "risk_state": asdict(self.risk.state),
+                  "trading_preferences": preferences,
+                  "daily_guard": self.daily_guard.update(float(self.client.account_info().equity) if self.execution.mode == TradingMode.LIVE else self.paper_equity()),
                   "last_decision": self.repository.get_state(self.execution.scope + ":decision", "Waiting for data")}
         self.repository.set_state("heartbeat", status)
         logger.info("heartbeat {}", json.dumps(status))
@@ -169,6 +234,8 @@ class TradingEngine:
             result.update(direction="HOLD", reason=reason)
         profile = result.get("profile", "baseline")
         analysis_key = "analysis:" + result["symbol"] + (":" + profile if profile != "baseline" else "")
+        if result.get('entry_variant'):
+            analysis_key += ':entry:' + result['entry_variant']
         analysis = self.repository.get_state(analysis_key, {})
         self.repository.record_decisions(self.execution.scope,[result],states={
             self.execution.scope+":decision":result,analysis_key:{**analysis,**result}})
@@ -200,15 +267,19 @@ class TradingEngine:
         self.repository.set_state(self.execution.scope+":decision",decision)
         profile=extra.get("profile", "baseline")
         analysis_key="analysis:"+symbol+(":"+profile if profile!="baseline" else "")
+        if extra.get('entry_variant'):
+            analysis_key += ':entry:' + extra['entry_variant']
         analysis=self.repository.get_state(analysis_key,{})
         self.repository.set_state(analysis_key,{**analysis,**decision})
 
-    def process_symbol(self, logical_symbol: str, submit=True, profile_name="baseline"):
+    def process_symbol(self, logical_symbol: str, submit=True, profile_name="baseline", entry_timeframe=None):
         cfg = self.profile_configs.get(profile_name, self.cfg)
         signal_engine = self.profile_engines.get(profile_name, self.signal_engine)
+        if profile_name == 'baseline' and entry_timeframe in self.entry_configs:
+            cfg, signal_engine = self.entry_configs[entry_timeframe], self.entry_engines[entry_timeframe]
         if self.execution.kill_switch_path.exists():
             logger.warning("Kill switch active")
-            self.record_unavailable(self.resolved.get(logical_symbol,logical_symbol),"Kill switch active","KILL_SWITCH",profile=profile_name)
+            self.record_unavailable(self.resolved.get(logical_symbol,logical_symbol),"Kill switch active","KILL_SWITCH",profile=profile_name,entry_variant=entry_timeframe)
             return None
         if logical_symbol not in self.resolved:
             self.resolved[logical_symbol] = self.resolver.resolve(logical_symbol)
@@ -217,9 +288,9 @@ class TradingEngine:
         self.quote_statuses[symbol] = quote_status
         self.feed.log_tick_status(quote_status)
         if not quote_status["fresh"]:
-            self.record_unavailable(symbol,quote_status["reason"],quote_status["status"],quote_status=quote_status["status"],profile=profile_name)
+            self.record_unavailable(symbol,quote_status["reason"],quote_status["status"],quote_status=quote_status["status"],profile=profile_name,entry_variant=entry_timeframe)
             return None
-        frames = self.load_frames(symbol, cfg) if profile_name != "baseline" else self.load_frames(symbol)
+        frames = self.load_frames(symbol, cfg) if profile_name != "baseline" or entry_timeframe in self.entry_configs else self.load_frames(symbol)
         self.latest_entry_frames[(symbol, profile_name)] = frames["entry"]
         self.track_wait(symbol,"availability")
         regime = detect_regime(frames["trend"], cfg.get("strategy.filters", {}))
@@ -241,10 +312,12 @@ class TradingEngine:
             frames["entry"], latest_quote, cfg.get("strategy.indicators", {}))
         if chart["status"] in {"OUT_OF_SYNC", "INVALID_BAR", "AWAITING_NEW_BAR"}:
             code = "DATA_INVALID" if chart["status"] == "INVALID_BAR" else "DATA_STALE"
-            self.record_unavailable(symbol, chart["reason"], code, profile=profile_name, live_chart=chart)
+            self.record_unavailable(symbol, chart["reason"], code, profile=profile_name, live_chart=chart,entry_variant=entry_timeframe)
             return None
         context["live_chart"] = chart
         signal = signal_engine.generate(symbol, frames, regime, structure, volume, news_ok, news_reason, news_score, spread,context)
+        if entry_timeframe is not None:
+            signal.meta['entry_variant'] = entry_timeframe
         signal.meta["live_chart"] = chart
         if not news_ok and signal.direction!=Direction.HOLD:
             signal.direction=Direction.HOLD
@@ -270,6 +343,7 @@ class TradingEngine:
         revision = signal.meta.get("config_revision", self.revision)
         decision_identity = (profile_name + ":" if profile_name != "baseline" else "") + signal.strategy
         decision = {"symbol": symbol, "profile": profile_name, "timeframe": signal.timeframe,
+                    "entry_variant":entry_timeframe,
                     "direction": signal.direction.value, "score": signal.confidence,
                     "threshold": cfg.get("trading.min_confidence", .70), "candle": str(candle), "strategy":signal.strategy,
                     "evaluation_id":evaluation_id(symbol, candle, decision_identity, revision), "config_revision":revision,
@@ -399,6 +473,10 @@ class TradingEngine:
         req.minimum_net_rr = signal.meta.get("trade_plan",{}).get("minimum_net_rr")
         req.profile = profile
         req.risk_fraction = risk_fraction
+        selected_frame = self.frames_cache.get((symbol, signal.meta.get('entry_variant') or signal.timeframe,
+            json.dumps(self.cfg.get('strategy.indicators', {}), sort_keys=True), False))
+        if selected_frame is not None:
+            self.latest_entry_frames[(symbol, profile)] = selected_frame
         if risk_tier == "STRONG_SETUP":
             req.minimum_net_rr = max(float(req.minimum_net_rr or 0),
                 float(self.cfg.get("trading.quality_sizing.min_net_rr", 2.0)))
@@ -432,7 +510,7 @@ class TradingEngine:
                 raise ValueError(f"{symbol}: no {tf} data")
             key = (symbol, tf, indicator_key, role != "entry")
             cached = self.frames_cache.get(key)
-            if cached is not None and cached.time.iloc[-1] == df.time.iloc[-1] and cached.close.iloc[-1] == df.close.iloc[-1]:
+            if cached is not None and set(df.columns).issubset(cached.columns) and cached.loc[:,df.columns].equals(df):
                 frames[role] = cached
             else:
                 frames[role] = add_indicators(df, cfg.get("strategy.indicators", {}))
@@ -440,6 +518,9 @@ class TradingEngine:
         return frames
 
     def position_decision(self, symbol, direction, entry, current, sl, meta, frames):
+        if self.daily_status.get("halt"):
+            from core.position_manager import PositionDecision
+            return PositionDecision(close=True, reason=self.daily_status["halt"])
         profile = meta.get("profile", "baseline")
         profile_cfg = self.profile_configs.get(profile)
         manager = (PositionManager(profile_cfg.get("position_management", {}))

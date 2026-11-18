@@ -20,6 +20,9 @@ def read_runtime(database_url, *, scope=None, since=None):
         db.execute("BEGIN")
         states = {r["key"]:json.loads(r["payload"]) for r in db.execute(
             "SELECT key,payload FROM runtime_state WHERE key='heartbeat' OR key LIKE 'analysis:%'")}
+        from core.trading_preferences import DEFAULTS
+        saved = db.execute("SELECT payload FROM runtime_state WHERE key=?", ((scope or "") + ":preferences",)).fetchone()
+        preferences = json.loads(saved["payload"]) if saved else dict(DEFAULTS)
         trade_filter = ""
         trade_args = ()
         if scope:
@@ -55,4 +58,4 @@ def read_runtime(database_url, *, scope=None, since=None):
         pnl.update(open_net=0.0 if not positions else None)
         pnl["total_net"] = pnl["closed_net"] if not positions else None
     return {"heartbeat":states.get("heartbeat"),"analyses":[v for k,v in states.items() if k.startswith("analysis:")],
-        "trades":trades,"positions":positions,"pnl":pnl}
+        "trades":trades,"positions":positions,"pnl":pnl,"trading_preferences":preferences}
